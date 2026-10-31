@@ -94,6 +94,34 @@ impl EyeCurve {
         self.paths.get(self.shown?)?.at(point)
     }
 
+    /// How many positions the shown path has.
+    pub fn samples(&self) -> usize {
+        self.shown.and_then(|shown| self.paths.get(shown)).map_or(0, |path| path.samples.len())
+    }
+
+    /// For each point of the loop, where the shown path's flutters really had the eye, if they
+    /// passed there: the median of its samples that fit the curve.
+    pub fn seen_at_points(&self) -> Vec<Option<(f32, f32)>> {
+        let mut out = vec![None; IDLE_LOOP_FRAMES];
+        let Some(path) = self.shown.and_then(|shown| self.paths.get(shown)) else { return out };
+        for (point, out) in out.iter_mut().enumerate() {
+            let Some(curve) = path.at(point) else { continue };
+            let (mut xs, mut ys): (Vec<f32>, Vec<f32>) = path
+                .samples
+                .iter()
+                .filter(|&&(at, x, y)| at == point && (x - curve.0).hypot(y - curve.1) <= OUTLIER_DISTANCE)
+                .map(|&(_, x, y)| (x, y))
+                .unzip();
+            if xs.is_empty() {
+                continue;
+            }
+            xs.sort_by(f32::total_cmp);
+            ys.sort_by(f32::total_cmp);
+            *out = Some((xs[xs.len() / 2], ys[ys.len() / 2]));
+        }
+        out
+    }
+
     /// Joins paths that turn out to be one.
     fn merge(&mut self) {
         for a in 0..self.paths.len() {

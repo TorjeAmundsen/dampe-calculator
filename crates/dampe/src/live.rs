@@ -78,11 +78,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let mut device = DEFAULT_DEVICE.to_owned();
     let timing = Arc::new(Timing::load());
     let mut window = true;
+    let mut no_sound = false;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--device" => device = args.next().ok_or("--device needs a name")?.clone(),
             "--no-window" => window = false,
+            "--no-sound" => no_sound = true,
             "--platform" => {
                 let platform = args.next().and_then(|value| Platform::parse(value));
                 timing.set_platform(platform.ok_or("--platform needs n64 or vc")?);
@@ -108,7 +110,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let sound = Arc::new(Sound::load());
     if !window {
         // Without a window, sound is the only cue there is
-        sound.force_on();
+        if !no_sound {
+            sound.force_on();
+        }
         return read(capture, &device, timing, None, Arc::default(), sound);
     }
     let window_sound = sound.clone();
@@ -238,6 +242,9 @@ fn read(
                     log.line(format_args!("flutter {flutters}: {} blinks, fit {:.2}", flutter.count, flutter.fit));
                 }
                 // Each flutter has its own line, and this count stops rising when old ones age out
+                Event::Skipped { frames, gap } => {
+                    log.line(format_args!("Counted {frames} skipped game frames from a {:.0} ms gap.", gap * 1000.0));
+                }
                 Event::BoxOpened => {
                     log.line("The Yes/No box is up, reading.");
                     flutters = 0;

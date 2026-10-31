@@ -66,6 +66,11 @@ impl GameClock {
 pub enum Event {
     Flutter(Flutter),
     Status(Status),
+    /// Game frames were counted as skipped, from a gap of this many seconds.
+    Skipped {
+        frames: i64,
+        gap: f64,
+    },
     /// The Yes/No box opened: everything starts from here.
     BoxOpened,
     /// Press A so the text box leaves on `box_frame`, which happens at `seconds`.
@@ -263,6 +268,9 @@ impl Session {
         }
         if let Some(last) = self.last_new_frame {
             let skipped = skipped_frames(seconds - last);
+            if skipped > 0 {
+                events.push(Event::Skipped { frames: skipped, gap: seconds - last });
+            }
             self.game_frame += skipped;
             self.detector.skip(skipped);
         }
@@ -270,8 +278,8 @@ impl Session {
         self.game_frame += 1;
         self.clock.add(self.game_frame, seconds);
 
-        let (_, flutter) = self.detector.push(&self.picture);
-        if let Some(flutter) = flutter {
+        let (_, flutters) = self.detector.push(&self.picture);
+        for flutter in flutters {
             events.push(Event::Flutter(flutter));
             let observation = Observation { start: flutter.start, count: flutter.count };
             let _ = self.work.send(Work::Observe(observation, flutter.is_clean(), self.game_frame));

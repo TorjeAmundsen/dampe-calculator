@@ -60,11 +60,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
             }
         }
         last_game = Some(frame.arrival);
-        let (info, flutter) = detector.push(&picture);
+        let (info, flutters) = detector.push(&picture);
         compared += u64::from(info.compared);
         bad += u64::from(info.bad_reference);
         with_blobs += u64::from(info.blobs > 0);
-        if let Some(flutter) = flutter {
+        for flutter in flutters {
             println!(
                 "{:6.1} s  flutter of {} at game frame {}, fit {:.2}",
                 (frame.arrival - started).as_secs_f64(),

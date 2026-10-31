@@ -5,8 +5,10 @@
 use crate::rng::{BOX_GONE_TO_ROLL, StateWalk, flutter_len, rolls_heart_piece};
 use crate::solver::{Candidate, Observation, SEARCH_MISSES, scan_from};
 
-/// Flutters a reading must have seen to be considered at all.
-const MIN_HITS: u32 = 7;
+/// Flutters a reading must have seen to be considered at all. With [`CONFIRMATIONS`], that makes 8.
+/// Against RNG watch values, 7 gave a wrong state with wrong Heart Piece frames, and 8 gave none in
+/// 23 locks.
+const MIN_HITS: u32 = 6;
 /// Flutters from a first one before scanning from it.
 const MIN_OBSERVATIONS: usize = 6;
 /// Flutters a scan's results must already have seen to be kept and rechecked.
@@ -17,7 +19,7 @@ const FLUTTERS_BETWEEN_SCANS: usize = 3;
 /// Observations kept, about 3 minutes' worth with strays.
 const MAX_OBSERVATIONS: usize = 100;
 /// Flutters a reading must predict correctly before it's trusted.
-pub const CONFIRMATIONS: u32 = 3;
+pub const CONFIRMATIONS: u32 = 2;
 /// A reading dies at this many of its flutters in a row that the video didn't show. Strays can't
 /// kill one, because the video really does show things that aren't flutters. A wrong reading can't
 /// keep hitting, so this ends it within a few seconds.

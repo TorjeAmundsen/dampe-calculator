@@ -34,9 +34,13 @@ const BLOB_MAX_WIDTH: u32 = 35;
 const BLOB_MAX_HEIGHT: u32 = 30;
 const BLOB_MIN_FILL: f32 = 0.3;
 
-/// More blobs than this mean the reference is bad, from before the scene settled, and not that
-/// there are many eyes. Such frames aren't tracked, and they replace the reference soon enough.
-const MAX_BLOBS: usize = 12;
+/// A blob with this many others within this many pixels is part of something large that's changing,
+/// like a drifting sky or a reference from before the scene settled. The eye stands alone, and one
+/// busy part of the picture mustn't hide it.
+const CROWD_BLOBS: usize = 3;
+const CROWD_RADIUS: f32 = 30.0;
+/// More blobs than this dropped means most of the frame differs: the reference is bad.
+const BAD_REFERENCE_DROPPED: usize = 100;
 
 /// Open-eye frames kept per point of the loop, and how many are needed to compare at all.
 const REFERENCE_FRAMES: usize = 5;
@@ -54,6 +58,22 @@ const TRACK_RADIUS_PER_FRAME: f32 = 3.0;
 /// A flutter is at most 11 frames. A track much longer than that is something else, and it's dropped
 /// so it can't keep taking the eye's blobs when the two come close.
 const TRACK_MAX_FRAMES: usize = 40;
+/// Following the eye from one point of the loop to the next in the reference frames: the patch
+/// compared, half its width and height, and how far it can have moved.
+const FOLLOW_PATCH_X: i32 = 16;
+const FOLLOW_PATCH_Y: i32 = 11;
+const FOLLOW_SEARCH: i32 = 7;
+/// A flutter's real position further than this from what was followed corrects it.
+const FOLLOW_CORRECT: f32 = 3.0;
+/// Once this many positions from clean flutters agree on the eye's path, about 4 flutters, only blobs
+/// near that path count. The rest of the picture can't hold the eye.
+const REGION_MIN_SAMPLES: usize = 24;
+/// How far around the path still counts, in pixels: his other eye is about 40 away.
+const REGION_MARGIN: u16 = 50;
+/// Game frames without a flutter inside before the region is forgotten and learned again. Flutters
+/// come every 3 seconds or so, so this is several missed in a row. It keeps a wrong region from
+/// hiding the eye for good.
+const REGION_MAX_SILENCE: i64 = 300;
 /// The shown eye box, half its width and height.
 const EYE_BOX_X: u16 = 10;
 const EYE_BOX_Y: u16 = 7;
@@ -112,7 +132,7 @@ struct Blob {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Health {
     pub game_frames: u32,
-    /// Frames ignored for having a bad reference.
+    /// Frames that differed so much from the reference that it must be bad.
     pub bad_reference: u32,
     /// Frames with blobs that could be the eye.
     pub with_blobs: u32,
@@ -130,7 +150,7 @@ pub struct FrameInfo {
     pub compared: bool,
     /// Blobs that could be the eye.
     pub blobs: usize,
-    /// So much differed from the reference that the frame was ignored.
+    /// So much differed from the reference that it must be bad.
     pub bad_reference: bool,
 }
 
@@ -189,6 +209,14 @@ impl LoopPoint {
             self.reference = Some(median(&self.frames));
         }
         self.reference.as_deref()
+    }
+
+    /// Takes a frame out again, as long as enough remain to compare with.
+    fn remove(&mut self, frame: &Arc<[u8]>) {
+        if self.frames.len() > REFERENCE_MIN {
+            self.frames.retain(|kept| !Arc::ptr_eq(kept, frame));
+            self.reference = None;
+        }
     }
 
     fn add(&mut self, frame: Arc<[u8]>) {
@@ -341,6 +369,35 @@ impl BlobFinder {
     }
 }
 
+/// Where the patch around `position` in `from` is in `to`, nearby.
+fn best_match(from: &[u8], to: &[u8], position: (f32, f32)) -> (f32, f32) {
+    let (center_x, center_y) = (position.0.round() as i32, position.1.round() as i32);
+    let margin_x = FOLLOW_PATCH_X + FOLLOW_SEARCH;
+    let margin_y = FOLLOW_PATCH_Y + FOLLOW_SEARCH;
+    let center_x = center_x.clamp(margin_x, WIDTH as i32 - margin_x - 1);
+    let center_y = center_y.clamp(margin_y, HEIGHT as i32 - margin_y - 1);
+    let mut best = (u32::MAX, 0, 0);
+    for dy in -FOLLOW_SEARCH..=FOLLOW_SEARCH {
+        for dx in -FOLLOW_SEARCH..=FOLLOW_SEARCH {
+            let mut difference = 0u32;
+            for y in -FOLLOW_PATCH_Y..=FOLLOW_PATCH_Y {
+                let a = ((center_y + y) as usize) * WIDTH + (center_x - FOLLOW_PATCH_X) as usize;
+                let b = ((center_y + y + dy) as usize) * WIDTH + (center_x + dx - FOLLOW_PATCH_X) as usize;
+                let len = (2 * FOLLOW_PATCH_X + 1) as usize;
+                for (&p, &q) in from[a..a + len].iter().zip(&to[b..b + len]) {
+                    difference += u32::from(p.abs_diff(q));
+                }
+            }
+            // Ties go to the smallest move
+            let moved = (dx * dx + dy * dy) as u32;
+            if (difference, moved) < (best.0, (best.1 * best.1 + best.2 * best.2) as u32) {
+                best = (difference, dx, dy);
+            }
+        }
+    }
+    (position.0 + best.1 as f32, position.1 + best.2 as f32)
+}
+
 /// One blob followed over frames. The eye's track blinks; the sky's stays on.
 struct Track {
     /// The game frames it had a blob on, ascending, and where.
@@ -404,13 +461,26 @@ pub struct Detector {
     blobs: BlobFinder,
     centers: Vec<Blob>,
     tracks: Vec<Track>,
+    /// The frames so far, until the reference is ready, to go through once it is. Flutters don't
+    /// wait for the reference, and every one counts.
+    learning: Option<Vec<(i64, Arc<[u8]>)>>,
     game_frame: i64,
     bad_reference: bool,
     health: Health,
     /// Where the eye is around the loop. Only for showing it: reading flutters doesn't use this.
     eye: EyeCurve,
-    /// How far the latest clean flutter was from where the curve said, before it was added.
+    /// How far the latest clean flutter was from where the eye was shown, before it was added.
     last_eye_error: Option<f32>,
+    /// Where the eye is at each point of the loop, followed through the reference frames.
+    eye_followed: Vec<Option<(f32, f32)>>,
+    /// Clean flutters came in since it was last followed.
+    follow_due: bool,
+    /// How far the worst point moved the last time it was followed.
+    last_eye_snap: Option<f32>,
+    /// The only part of the picture that can hold the eye, once that's known.
+    region: Option<Rect>,
+    /// The latest game frame a flutter was recognized on, for giving up on a region.
+    last_flutter_frame: i64,
 }
 
 impl Default for Detector {
@@ -429,11 +499,17 @@ impl Detector {
             blobs: BlobFinder::new(),
             centers: Vec::new(),
             tracks: Vec::new(),
+            learning: Some(Vec::new()),
             game_frame: -1,
             bad_reference: false,
             health: Health::default(),
             eye: EyeCurve::default(),
             last_eye_error: None,
+            eye_followed: vec![None; IDLE_LOOP_FRAMES],
+            follow_due: false,
+            last_eye_snap: None,
+            region: None,
+            last_flutter_frame: 0,
         }
     }
 
@@ -445,7 +521,8 @@ impl Detector {
     /// Where the eye should be on the latest frame: a fixed-size box on the eye's path around the
     /// loop. `None` until enough clean flutters have shown it.
     pub fn expected_eye(&self) -> Option<Rect> {
-        let (x, y) = self.eye.at(self.game_frame.max(0) as usize % IDLE_LOOP_FRAMES)?;
+        let point = self.game_frame.max(0) as usize % IDLE_LOOP_FRAMES;
+        let (x, y) = self.eye_followed[point].or_else(|| self.eye.at(point))?;
         let (x, y) = (x.clamp(0.0, (WIDTH - 1) as f32) as u16, y.clamp(0.0, (HEIGHT - 1) as f32) as u16);
         Some(Rect {
             left: x.saturating_sub(EYE_BOX_X),
@@ -453,6 +530,75 @@ impl Detector {
             right: (x + EYE_BOX_X).min(WIDTH as u16 - 1),
             bottom: (y + EYE_BOX_Y).min(HEIGHT as u16 - 1),
         })
+    }
+
+    /// The bounding box of the eye's path around the loop, with room around it.
+    fn eye_region(&self) -> Option<Rect> {
+        if self.eye.samples() < REGION_MIN_SAMPLES {
+            return None;
+        }
+        let (mut left, mut top, mut right, mut bottom) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for &(x, y) in self.eye_followed.iter().flatten() {
+            left = left.min(x);
+            right = right.max(x);
+            top = top.min(y);
+            bottom = bottom.max(y);
+        }
+        (left <= right).then(|| Rect {
+            left: (left.max(0.0) as u16).saturating_sub(REGION_MARGIN),
+            top: (top.max(0.0) as u16).saturating_sub(REGION_MARGIN),
+            right: (right.max(0.0) as u16 + REGION_MARGIN).min(WIDTH as u16 - 1),
+            bottom: (bottom.max(0.0) as u16 + REGION_MARGIN).min(HEIGHT as u16 - 1),
+        })
+    }
+
+    /// The part of the picture blobs count in, if it's known.
+    pub fn region(&self) -> Option<Rect> {
+        self.region
+    }
+
+    /// How far the worst point of the loop moved the last time the eye was followed, in pixels.
+    pub fn last_eye_snap(&self) -> Option<f32> {
+        self.last_eye_snap
+    }
+
+    /// Follows the eye around the loop through the reference frames, which show the open eye at
+    /// every point, also where flutters rarely land because something hides the eye then. It starts
+    /// from where flutters really saw the eye, and they correct it whenever they disagree.
+    fn follow_eye(&mut self) {
+        let seen = self.eye.seen_at_points();
+        let Some(start) = (0..IDLE_LOOP_FRAMES).find(|&point| seen[point].is_some()) else { return };
+        for point in &mut self.points {
+            point.reference();
+        }
+        if self.points.iter().any(|point| point.reference.is_none()) {
+            return;
+        }
+        let mut followed = vec![None; IDLE_LOOP_FRAMES];
+        let mut position = seen[start].expect("found above");
+        followed[start] = Some(position);
+        for step in 1..IDLE_LOOP_FRAMES {
+            let (from, to) = ((start + step - 1) % IDLE_LOOP_FRAMES, (start + step) % IDLE_LOOP_FRAMES);
+            let found = best_match(
+                self.points[from].reference.as_deref().expect("checked above"),
+                self.points[to].reference.as_deref().expect("checked above"),
+                position,
+            );
+            position = match seen[to] {
+                Some(real) if (real.0 - found.0).hypot(real.1 - found.1) > FOLLOW_CORRECT => real,
+                _ => found,
+            };
+            followed[to] = Some(position);
+        }
+        self.last_eye_snap = self
+            .eye_followed
+            .iter()
+            .zip(&followed)
+            .filter_map(|(old, new)| Some((*old)?.0 - (*new)?.0).zip(Some((*old)?.1 - (*new)?.1)))
+            .map(|(x, y): (f32, f32)| x.hypot(y))
+            .max_by(f32::total_cmp);
+        self.eye_followed = followed;
+        self.region = self.eye_region();
     }
 
     /// How far the latest clean flutter was from where the curve expected it, in pixels.
@@ -472,30 +618,84 @@ impl Detector {
         self.game_frame += frames;
     }
 
-    /// The next game frame's picture. Returns what it showed, and the flutter that was just
-    /// recognized, a few game frames after it ended.
-    pub fn push(&mut self, picture: &[u8]) -> (FrameInfo, Option<Flutter>) {
+    /// The next game frame's picture. Returns what it showed, and the flutters just recognized, a
+    /// few game frames after they ended. Those from while the reference was being built all come at
+    /// once when it's ready.
+    pub fn push(&mut self, picture: &[u8]) -> (FrameInfo, Vec<Flutter>) {
         self.game_frame += 1;
-        let compared = self.compare(self.game_frame as usize % IDLE_LOOP_FRAMES, picture);
+        let frame: Arc<[u8]> = Arc::from(picture);
+        if let Some(learning) = &mut self.learning {
+            learning.push((self.game_frame, frame.clone()));
+            self.points[self.game_frame as usize % IDLE_LOOP_FRAMES].add(frame);
+            let info = FrameInfo { game_frame: self.game_frame, compared: false, blobs: 0, bad_reference: false };
+            if self.points.iter().any(|point| point.frames.len() < REFERENCE_MIN) {
+                return (info, Vec::new());
+            }
+            return (info, self.read_learned());
+        }
+        let (compared, flutter) = self.read(picture);
         let blobs = self.centers.len();
-        self.health.game_frames += 1;
-        self.health.bad_reference += u32::from(self.bad_reference);
-        self.health.with_blobs += u32::from(blobs > 0);
-        let flutter = self.track();
-        if let Some(flutter) = flutter {
+        // Only a clean flutter keeps its frames out of the reference. Most others aren't flutters, and
+        // keeping frames out on their word can stop a bad reference from ever being replaced
+        if let Some(flutter) = flutter.filter(Flutter::is_clean) {
             let range = flutter.start..flutter.start + flutter_len(flutter.count);
             self.pending.retain(|pending| !range.contains(&pending.game_frame));
         }
-        self.pending.push_back(Pending { game_frame: self.game_frame, frame: Arc::from(picture) });
+        self.pending.push_back(Pending { game_frame: self.game_frame, frame });
         while self.pending.len() > SETTLE_FRAMES {
             let oldest = self.pending.pop_front().expect("checked the length");
             self.points[oldest.game_frame as usize % IDLE_LOOP_FRAMES].add(oldest.frame);
         }
-        (FrameInfo { game_frame: self.game_frame, compared, blobs, bad_reference: self.bad_reference }, flutter)
+        let info = FrameInfo { game_frame: self.game_frame, compared, blobs, bad_reference: self.bad_reference };
+        (info, flutter.into_iter().collect())
+    }
+
+    /// Reads the frames from while the reference was being built, now that it's ready. Frames that
+    /// turn out to be part of a flutter leave the reference.
+    fn read_learned(&mut self) -> Vec<Flutter> {
+        let learned = self.learning.take().unwrap_or_default();
+        let latest = self.game_frame;
+        let mut flutters = Vec::new();
+        for (game_frame, frame) in &learned {
+            self.game_frame = *game_frame;
+            flutters.extend(self.read(frame).1);
+        }
+        self.game_frame = latest;
+        for flutter in flutters.iter().filter(|flutter| flutter.is_clean()) {
+            let range = flutter.start..flutter.start + flutter_len(flutter.count);
+            for (game_frame, frame) in &learned {
+                if range.contains(game_frame) {
+                    self.points[*game_frame as usize % IDLE_LOOP_FRAMES].remove(frame);
+                }
+            }
+        }
+        flutters
+    }
+
+    /// Compares one frame and follows what's on it. Whether it could be compared, and the flutter
+    /// just recognized, if any.
+    fn read(&mut self, picture: &[u8]) -> (bool, Option<Flutter>) {
+        let compared = self.compare(self.game_frame as usize % IDLE_LOOP_FRAMES, picture);
+        self.health.game_frames += 1;
+        self.health.bad_reference += u32::from(self.bad_reference);
+        self.health.with_blobs += u32::from(!self.centers.is_empty());
+        let flutter = self.track();
+        if flutter.is_some() {
+            self.last_flutter_frame = self.game_frame;
+        }
+        if std::mem::take(&mut self.follow_due) {
+            self.follow_eye();
+        }
+        (compared, flutter)
     }
 
     fn compare(&mut self, point: usize, picture: &[u8]) -> bool {
-        let Self { points, busy, mask, blobs, centers, bad_reference, .. } = self;
+        if self.region.is_some() && self.game_frame - self.last_flutter_frame > REGION_MAX_SILENCE {
+            self.region = None;
+            self.eye = EyeCurve::default();
+            self.eye_followed.fill(None);
+        }
+        let Self { points, busy, mask, blobs, centers, bad_reference, region, .. } = self;
         centers.clear();
         let Some(reference) = points[point].reference() else { return false };
         for (((out, &pixel), &reference), busy) in mask.iter_mut().zip(picture).zip(reference).zip(busy.iter_mut()) {
@@ -504,10 +704,25 @@ impl Detector {
             *out = u8::from(changed && *busy < BUSY_SHARE);
         }
         blobs.find(mask, centers);
-        *bad_reference = centers.len() > MAX_BLOBS;
-        if *bad_reference {
-            centers.clear();
+        if let Some(region) = region {
+            centers.retain(|blob| blob.rect.overlaps(region));
         }
+        let crowded: Vec<bool> = centers
+            .iter()
+            .map(|blob| {
+                let near = centers
+                    .iter()
+                    .filter(|other| {
+                        (other.center.0 - blob.center.0).hypot(other.center.1 - blob.center.1) <= CROWD_RADIUS
+                    })
+                    .count();
+                near > CROWD_BLOBS
+            })
+            .collect();
+        let dropped = crowded.iter().filter(|&&crowded| crowded).count();
+        *bad_reference = dropped > BAD_REFERENCE_DROPPED;
+        let mut keep = crowded.iter().map(|&crowded| !crowded);
+        centers.retain(|_| keep.next().unwrap_or(false));
         true
     }
 
@@ -537,7 +752,8 @@ impl Detector {
         }
         let mut best: Option<Flutter> = None;
         let mut rejected = 0;
-        let (eye, last_eye_error) = (&mut self.eye, &mut self.last_eye_error);
+        let (eye, last_eye_error, table, follow_due) =
+            (&mut self.eye, &mut self.last_eye_error, &self.eye_followed, &mut self.follow_due);
         self.tracks.retain(|track| {
             if track.frames.len() > TRACK_MAX_FRAMES {
                 return false;
@@ -556,13 +772,16 @@ impl Detector {
                             .map(|(&seen, center)| (seen as usize % IDLE_LOOP_FRAMES, center.0, center.1))
                             .collect();
                         let errors = positions.iter().filter_map(|&(point, x, y)| {
-                            eye.at(point).map(|expected| (expected.0 - x).hypot(expected.1 - y))
+                            table[point]
+                                .or_else(|| eye.at(point))
+                                .map(|expected| (expected.0 - x).hypot(expected.1 - y))
                         });
                         *last_eye_error = errors
                             .clone()
                             .max_by(f32::total_cmp)
                             .map(|_| errors.clone().sum::<f32>() / errors.count() as f32);
                         eye.add(positions);
+                        *follow_due = true;
                     }
                 }
                 Some(_) => {}
@@ -638,11 +857,27 @@ mod tests {
                 frame += 1;
                 continue;
             }
-            let (_, flutter) = detector.push(&scene(frame as i64, states[frame], false));
-            read.extend(flutter.map(|f| (f.start, f.count)));
+            let (_, flutters) = detector.push(&scene(frame as i64, states[frame], false));
+            read.extend(flutters.iter().map(|f| (f.start, f.count)));
             frame += 1;
         }
         assert_eq!(after_warmup(&read), after_warmup(&flutters));
+    }
+
+    /// Following is what fills the stretches of the loop no flutter has reached, so it has to find
+    /// a feature that moved, and not move when nothing did.
+    #[test]
+    fn following_finds_what_moved() {
+        let picture = |x: usize, y: usize| {
+            let mut out = vec![50u8; WIDTH * HEIGHT];
+            for row in y..y + 10 {
+                out[row * WIDTH + x..row * WIDTH + x + 16].fill(200);
+            }
+            out
+        };
+        let from = picture(200, 150);
+        assert_eq!(best_match(&from, &picture(205, 147), (208.0, 155.0)), (213.0, 152.0));
+        assert_eq!(best_match(&from, &from, (208.0, 155.0)), (208.0, 155.0));
     }
 
     /// The box has to end up on the eye, which moves around the picture with the loop, and it has
@@ -671,10 +906,8 @@ mod tests {
         let mut detector = Detector::new();
         let mut read = Vec::new();
         for (frame, &state) in states.iter().enumerate() {
-            let (_, flutter) = detector.push(&scene(frame as i64, state, sky));
-            if let Some(flutter) = flutter {
-                read.push((flutter.start, flutter.count));
-            }
+            let (_, flutters) = detector.push(&scene(frame as i64, state, sky));
+            read.extend(flutters.iter().map(|flutter| (flutter.start, flutter.count)));
         }
         read
     }
@@ -691,12 +924,94 @@ mod tests {
         assert_eq!(after_warmup(&read(&states, false)), after_warmup(&flutters));
     }
 
+    /// Flutters from before the reference is ready count too, or the read starts seconds late.
+    #[test]
+    fn flutters_from_while_learning_are_read_too() {
+        let (flutters, states) = eye_track(777_777, 800);
+        let ready = (IDLE_LOOP_FRAMES * REFERENCE_MIN) as i64;
+        let early: Vec<_> = flutters.iter().copied().filter(|&(start, _)| start < ready - 20).collect();
+        assert!(early.len() >= 2, "the control: there have to be some {early:?}");
+        let read = read(&states, false);
+        for flutter in early {
+            assert!(read.contains(&flutter), "{flutter:?} not in {read:?}");
+        }
+    }
+
     /// The sky's blob is bigger than the eye and always there. It must not hide the eye, and it
     /// must not read as a flutter.
     #[test]
     fn a_big_blob_that_stays_on_changes_nothing() {
         let (flutters, states) = eye_track(777_777, 1500);
         assert_eq!(after_warmup(&read(&states, true)), after_warmup(&flutters));
+    }
+
+    /// Something blinking just like an eye, somewhere the eye never is, stops counting once the
+    /// eye's place is known. The real flutters have to keep coming.
+    #[test]
+    fn a_flutter_outside_the_eyes_region_is_ignored() {
+        let (flutters, states) = eye_track(777_777, 2500);
+        let mut detector = Detector::new();
+        let mut read = Vec::new();
+        for (frame, &state) in states.iter().enumerate() {
+            let mut picture = scene(frame as i64, state, false);
+            // A perfect 3 blink flutter every 170 frames, far from the head
+            let phase = frame % 170;
+            if phase < 8 && phase % 3 != 2 {
+                for row in 390..405 {
+                    picture[row * WIDTH + 520..row * WIDTH + 535].fill(200);
+                }
+            }
+            let (_, found) = detector.push(&picture);
+            read.extend(found.iter().map(|f| (f.start, f.count)));
+        }
+        assert!(detector.region().is_some(), "the control: it has to have learned a region");
+        let late = |list: &[(i64, u8)]| -> Vec<(i64, u8)> { list.iter().copied().filter(|f| f.0 > 1200).collect() };
+        let real = late(&flutters);
+        let strays: Vec<_> = late(&read).into_iter().filter(|f| !real.contains(f)).collect();
+        assert_eq!(strays, [], "read {:?}", late(&read));
+        let found = real.iter().filter(|f| late(&read).contains(f)).count();
+        assert!(found * 10 >= real.len() * 9, "{found} of {}", real.len());
+    }
+
+    /// A wrong region can't be allowed to hide the eye for good.
+    #[test]
+    fn a_region_with_nothing_in_it_is_forgotten() {
+        let (_, states) = eye_track(777_777, 1200);
+        let mut detector = Detector::new();
+        for (frame, &state) in states.iter().enumerate() {
+            detector.push(&scene(frame as i64, state, false));
+        }
+        assert!(detector.region().is_some(), "the control: it has to have learned a region");
+        for frame in 1200..1200 + REGION_MAX_SILENCE as usize + 20 {
+            detector.push(&scene(frame as i64, 0, false));
+        }
+        assert_eq!(detector.region(), None);
+    }
+
+    /// A busy patch full of small changes, like a drifting sky, must not hide the eye elsewhere.
+    #[test]
+    fn a_crowd_of_small_changes_does_not_hide_the_eye() {
+        let (flutters, states) = eye_track(777_777, 1500);
+        let mut detector = Detector::new();
+        let mut read = Vec::new();
+        for (frame, &state) in states.iter().enumerate() {
+            let mut picture = scene(frame as i64, state, false);
+            // Dozens of blobs that change on their own schedule, far from the head
+            for i in 0..40 {
+                let (x, y) = (360 + (i % 8) * 25, 20 + (i / 8) * 25);
+                if (frame + i * 7) % 5 == 0 {
+                    for row in y..y + 6 {
+                        picture[row * WIDTH + x..row * WIDTH + x + 6].fill(160);
+                    }
+                }
+            }
+            let (_, found) = detector.push(&picture);
+            read.extend(found.iter().map(|f| (f.start, f.count)));
+        }
+        let read = after_warmup(&read);
+        for flutter in after_warmup(&flutters) {
+            assert!(read.contains(&flutter), "{flutter:?} not read");
+        }
     }
 
     /// With the eye never closing there's nothing to read, even though the head keeps moving.

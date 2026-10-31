@@ -16,7 +16,7 @@ mod sound;
 mod timing;
 
 const USAGE: &str = "usage:
-  dampe live [--device <name>] [--platform n64|vc] [--feed-delay-ms <ms>] [--no-window]
+  dampe live [--device <name>] [--platform n64|vc] [--feed-delay-ms <ms>] [--no-window] [--no-sound]
                                                  read a device and cue the A press
   dampe diag [--device <name>] [--seconds <n>]   measure what the feed delivers
   dampe devices                                  list video devices

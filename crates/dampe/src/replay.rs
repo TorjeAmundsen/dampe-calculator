@@ -87,6 +87,8 @@ struct Score {
     windows: usize,
     windows_right: usize,
     flutters_to_lock: Vec<usize>,
+    /// The game frames locks came on, counted from when reading started.
+    lock_frames: Vec<i64>,
 }
 
 pub fn run(args: &[String]) -> Result<(), String> {
@@ -135,6 +137,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let mut game_to_truth = Vec::<Option<usize>>::new();
     let mut video_frame = 0u64;
     let mut eye_errors = Vec::new();
+    let mut eye_snaps: Vec<f32> = Vec::new();
 
     while pipe.read_exact(&mut raw).is_ok() {
         let (luma, chroma) = raw.split_at(width * height);
@@ -155,30 +158,41 @@ pub fn run(args: &[String]) -> Result<(), String> {
             }
         }
         game_to_truth.push(truth.as_ref().and_then(|truth| truth.by_video.get(&current).copied()));
-        let (_, flutter) = detector.push(&picture);
-        let Some(flutter) = flutter else { continue };
-        if flutter.is_clean()
-            && let Some(error) = detector.last_eye_error()
-        {
-            eye_errors.push(error);
+        let (_, flutters) = detector.push(&picture);
+        if let Some(snap) = detector.last_eye_snap() {
+            eye_snaps.push(snap);
         }
-        seen.push((current as i64, flutter));
-        flutters_since_reset += 1;
-        tracker.add(Observation { start: flutter.start, count: flutter.count }, flutter.is_clean());
-        tracker.update(game_to_truth.len() as i64 - 1);
-        if tracker.is_locked() {
-            score.locks += 1;
-            score.flutters_to_lock.push(flutters_since_reset);
-            if let Some(truth) = &truth {
-                check_lock(&tracker, truth, &game_to_truth, flutter.start, &mut score);
+        for flutter in flutters {
+            if flutter.is_clean()
+                && let Some(error) = detector.last_eye_error()
+            {
+                eye_errors.push(error);
             }
-            tracker.reset();
-            flutters_since_reset = 0;
+            seen.push((current as i64, flutter));
+            flutters_since_reset += 1;
+            tracker.add(Observation { start: flutter.start, count: flutter.count }, flutter.is_clean());
+            tracker.update(game_to_truth.len() as i64 - 1);
+            if tracker.is_locked() {
+                score.locks += 1;
+                score.flutters_to_lock.push(flutters_since_reset);
+                score.lock_frames.push(game_to_truth.len() as i64 - 1);
+                if let Some(truth) = &truth {
+                    check_lock(&tracker, truth, &game_to_truth, flutter.start, &mut score);
+                }
+                tracker.reset();
+                flutters_since_reset = 0;
+            }
         }
     }
     let _ = child.wait();
 
     println!("video frames {video_frame}, game frames {}, flutters read {}", game_to_truth.len(), seen.len());
+    let health = detector.take_health();
+    println!("detector: {health:?}, region {:?}", detector.region());
+    eye_snaps.sort_by(f32::total_cmp);
+    if let Some(worst) = eye_snaps.last() {
+        println!("eye snap per update, px: median {:.1}, worst {worst:.1}", eye_snaps[eye_snaps.len() / 2]);
+    }
     eye_errors.sort_by(f32::total_cmp);
     if let (Some(median), Some(worst)) = (eye_errors.get(eye_errors.len() / 2), eye_errors.last()) {
         let ninety = eye_errors[eye_errors.len() * 9 / 10];
@@ -195,6 +209,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
         "locks {}: state right {}, wrong {}; flutters per lock {:?}",
         score.locks, score.states_right, score.states_wrong, score.flutters_to_lock
     );
+    let seconds: Vec<f64> =
+        score.lock_frames.iter().map(|&frame| (frame as f64 / 19.98 * 10.0).round() / 10.0).collect();
+    println!("seconds from the start of reading to each lock: {seconds:?}");
     if truth.is_some() {
         println!(
             "windows {}, every frame right {}; window frames right {}/{}",
@@ -213,7 +230,15 @@ fn run_session(pipe: &mut impl Read, width: usize, height: usize, needs_box: boo
     while pipe.read_exact(&mut raw).is_ok() {
         let (luma, chroma) = raw.split_at(width * height);
         let frame = Luma { data: luma, width, height, stride: width };
+        let seen = session.frames_seen();
         session.push(frame, chroma, video_frame as f64 * 1001.0 / 60000.0, &mut events);
+        if session.frames_seen() != seen
+            && std::env::var_os("DAMPE_EYE_LOG").is_some()
+            && let Some(eye) = session.expected_eye()
+        {
+            let blob = session.blobs().find(|blob| blob.overlaps(&eye));
+            println!("eye {video_frame} {} {} {} {} {}", eye.left, eye.top, eye.right, eye.bottom, blob.is_some());
+        }
         video_frame += 1;
         for event in events.drain(..) {
             if !matches!(event, Event::Flutter(_)) {
