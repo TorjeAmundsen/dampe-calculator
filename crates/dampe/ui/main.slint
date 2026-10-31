@@ -1,0 +1,278 @@
+// The window: the feed in color with what the read sees on top, and the state of the read beside it.
+// Colors are AutoSplit's dark theme.
+
+import { Button, CheckBox, ComboBox, Slider } from "std-widgets.slint";
+
+// In the game's picture, which is 720 by 540 whatever the feed is
+export struct GameRect {
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+}
+
+global Colors {
+    out property <color> reached: #6cd688;
+    out property <color> blob: #e0c040;
+    out property <color> blinking: #ff7070;
+    out property <color> secondary: #a8a8a8;
+    out property <color> field: #2d2d2d;
+    out property <color> frame: #555555;
+    out property <color> bar: #3d9bff;
+}
+
+component Mark inherits Rectangle {
+    in property <GameRect> rect;
+    in property <length> unit;
+    in property <color> mark-color;
+    in property <length> grow: 0px;
+    x: self.rect.x * self.unit - self.grow;
+    y: self.rect.y * self.unit - self.grow;
+    width: self.rect.width * self.unit + 2 * self.grow;
+    height: self.rect.height * self.unit + 2 * self.grow;
+    border-width: 2px;
+    border-color: self.mark-color;
+    background: transparent;
+}
+
+export component MainWindow inherits Window {
+    title: "Dampe RNG";
+    preferred-width: 1040px;
+    preferred-height: 700px;
+    min-width: 640px;
+    min-height: 560px;
+    background: #1f1f1f;
+
+    in property <image> feed;
+    in property <image> eye-zoom;
+    in property <[GameRect]> blobs;
+    in property <GameRect> eye;
+    in property <bool> has-eye;
+    in property <bool> blinking;
+    in property <string> status: "Waiting for the Yes/No box";
+    in property <color> status-color: white;
+    in property <string> latest;
+    in property <string> device;
+    in property <string> countdown;
+    // How close the long beep is: 0 is far away, 1 is now
+    in property <float> countdown-share;
+    // A flash on each of the last seconds, to get the rhythm of it
+    in property <bool> pulse;
+    // The moment to press
+    in property <bool> press;
+    in-out property <int> platform-index: 1;
+    in property <string> timing;
+    in-out property <bool> sound-on;
+    in-out property <float> volume: 50;
+    in property <[string]> log;
+
+    callback start-over();
+    callback platform-changed();
+    callback sound-changed();
+    callback volume-released();
+
+    HorizontalLayout {
+        padding: 10px;
+        spacing: 10px;
+
+        feed-frame := Rectangle {
+            horizontal-stretch: 1;
+            background: black;
+            border-width: root.press ? 6px : root.pulse ? 3px : 1px;
+            border-color: root.press ? Colors.reached : root.pulse ? white : Colors.frame;
+
+            property <length> unit: min(self.width / 720, self.height / 540);
+
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 720 * feed-frame.unit;
+                height: 540 * feed-frame.unit;
+
+                Image {
+                    width: 100%;
+                    height: 100%;
+                    source: root.feed;
+                    image-fit: fill;
+                }
+
+                for rect in root.blobs: Mark {
+                    rect: rect;
+                    unit: feed-frame.unit;
+                    mark-color: Colors.blob;
+                    grow: 1px;
+                }
+                if root.has-eye: Mark {
+                    rect: root.eye;
+                    unit: feed-frame.unit;
+                    mark-color: root.blinking ? Colors.blinking : Colors.reached;
+                }
+            }
+        }
+
+        VerticalLayout {
+            width: 280px;
+            spacing: 8px;
+
+            Text {
+                // Room for 2 lines whatever it says, so nothing below moves
+                height: 48px;
+                text: root.status;
+                color: root.status-color;
+                font-size: 18px;
+                font-weight: 700;
+                wrap: word-wrap;
+                overflow: elide;
+                vertical-alignment: top;
+            }
+
+            Text {
+                height: 18px;
+                text: root.latest;
+                color: Colors.secondary;
+                font-size: 13px;
+                overflow: elide;
+            }
+
+            Rectangle {
+                height: 84px;
+                background: root.press ? Colors.reached : root.pulse ? #5a5a5a : Colors.field;
+                border-width: 1px;
+                border-color: Colors.frame;
+
+                Rectangle {
+                    x: 0px;
+                    y: parent.height - self.height;
+                    width: parent.width * root.countdown-share;
+                    height: 14px;
+                    background: root.press ? white : Colors.bar;
+                }
+
+                Text {
+                    y: 6px;
+                    height: parent.height - 24px;
+                    text: root.countdown == "" ? "No press yet" : root.countdown;
+                    color: root.press ? black : root.countdown == "" ? Colors.secondary : white;
+                    font-size: root.countdown == "" ? 14px : 34px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle {
+                min-height: 90px;
+                preferred-height: 190px;
+                background: black;
+                border-width: 2px;
+                border-color: !root.has-eye ? Colors.frame : root.blinking ? Colors.blinking : Colors.reached;
+
+                Image {
+                    x: 2px;
+                    y: 2px;
+                    width: parent.width - 4px;
+                    height: parent.height - 4px;
+                    source: root.eye-zoom;
+                    image-fit: contain;
+                    image-rendering: pixelated;
+                    visible: root.has-eye;
+                }
+
+                Text {
+                    text: "Eye not found yet";
+                    color: Colors.secondary;
+                    visible: !root.has-eye;
+                }
+            }
+
+            Text {
+                height: 16px;
+                text: "Green: eye. Red: changing. Yellow: other changes.";
+                color: Colors.secondary;
+                font-size: 11px;
+                overflow: elide;
+            }
+
+            Rectangle {
+                // Shows the newest lines that fit, and never asks for more room than it's given
+                vertical-stretch: 1;
+                min-height: 30px;
+                preferred-height: 30px;
+                background: Colors.field;
+                border-width: 1px;
+                border-color: Colors.frame;
+                clip: true;
+
+                log-lines := VerticalLayout {
+                    x: 6px;
+                    y: parent.height - self.height - 4px;
+                    width: parent.width - 12px;
+                    height: self.preferred-height;
+
+                    for line in root.log: Text {
+                        text: line;
+                        color: Colors.secondary;
+                        font-size: 11px;
+                        overflow: elide;
+                    }
+                }
+            }
+
+            ComboBox {
+                model: ["N64", "Wii VC"];
+                current-index <=> root.platform-index;
+                selected => {
+                    root.platform-changed();
+                }
+            }
+
+            Text {
+                height: 14px;
+                text: root.timing;
+                color: Colors.secondary;
+                font-size: 11px;
+                overflow: elide;
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: stretch;
+
+                CheckBox {
+                    text: "Sound";
+                    horizontal-stretch: 0;
+                    checked <=> root.sound-on;
+                    toggled => {
+                        root.sound-changed();
+                    }
+                }
+
+                Slider {
+                    horizontal-stretch: 1;
+                    minimum: 0;
+                    maximum: 100;
+                    enabled: root.sound-on;
+                    value <=> root.volume;
+                    released(_) => {
+                        root.volume-released();
+                    }
+                }
+            }
+
+            Button {
+                text: "Start over";
+                clicked => {
+                    root.start-over();
+                }
+            }
+
+            Text {
+                height: 14px;
+                text: root.device;
+                color: Colors.secondary;
+                font-size: 11px;
+                overflow: elide;
+            }
+        }
+    }
+}
