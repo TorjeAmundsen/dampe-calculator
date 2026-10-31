@@ -15,7 +15,10 @@ Video goes in, and a countdown comes out. It never sends any input to the game, 
 4. Wait for the countdown in the window, and press A as it reaches zero. It flashes on the last 3 seconds, and on the
    moment itself. Anticipate it like a rhythm game. Sound is off unless you turn it on in the window, and it's always
    on with `--no-window`, which has no other cue.
-5. Choose your platform in the window, or with `--platform n64` or `--platform vc`. The countdown allows for its input
+5. If you've talked to Dampe before, the box opens right away, while Navi is still flying around, and her sparkles
+   draw RNG. It waits for her by itself, from how the picture looks. If that's wrong, press F8 once she has settled, or
+   click Navi gone in the window, and only flutters from then on count. `--navi-key` picks another function key.
+6. Choose your platform in the window, or with `--platform n64` or `--platform vc`. The countdown allows for its input
    latency (2 or 3 game frames) and the delay of your feed, which it measures from your presses and remembers.
    `--feed-delay-ms` sets that delay by hand instead.
 

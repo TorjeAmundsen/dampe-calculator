@@ -13,10 +13,12 @@ use dampe_core::tracker::Status;
 
 use crate::capture::{Capture, list_devices};
 use crate::gui::{self, Gui, Tone};
+use crate::hotkey;
 use crate::sound::{self, Sound};
 use crate::timing::{Platform, Timing};
 
 const DEFAULT_DEVICE: &str = "OBS Virtual Camera";
+const DEFAULT_NAVI_KEY: &str = "F8";
 /// How far from the countdown's zero the box can leave and still have been following it.
 const CUE_FOLLOWED: f64 = 1.0;
 /// The countdown's short tones come this many seconds before the long one.
@@ -79,12 +81,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let timing = Arc::new(Timing::load());
     let mut window = true;
     let mut no_sound = false;
+    let mut navi_key = DEFAULT_NAVI_KEY.to_owned();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--device" => device = args.next().ok_or("--device needs a name")?.clone(),
             "--no-window" => window = false,
             "--no-sound" => no_sound = true,
+            "--navi-key" => navi_key = args.next().ok_or("--navi-key needs a key")?.to_ascii_uppercase(),
             "--platform" => {
                 let platform = args.next().and_then(|value| Platform::parse(value));
                 timing.set_platform(platform.ok_or("--platform needs n64 or vc")?);
@@ -107,18 +111,28 @@ pub fn run(args: &[String]) -> Result<(), String> {
     println!("Open the Yes/No box, wait for Navi to settle, then don't touch anything until the cue.");
     println!("Press Enter here or Start over in the window after a new talk, or a new camera angle.");
 
+    let key = hotkey::parse_key(&navi_key).ok_or("--navi-key needs a function key, F1 to F24")?;
+    let navi_gone = Arc::new(AtomicBool::new(false));
+    let failed_key = navi_key.clone();
+    hotkey::listen(key, navi_gone.clone(), move || {
+        println!("Couldn't use {failed_key} as the Navi key: another program has it. Try --navi-key.");
+    });
+    println!(
+        "If the box opened right away because you've talked to Dampe before, it waits for Navi by itself. {navi_key} says she's done, if it's wrong."
+    );
     let sound = Arc::new(Sound::load());
     if !window {
         // Without a window, sound is the only cue there is
         if !no_sound {
             sound.force_on();
         }
-        return read(capture, &device, timing, None, Arc::default(), sound);
+        return read(capture, &device, timing, None, Arc::default(), navi_gone, sound);
     }
     let window_sound = sound.clone();
     let window_timing = timing.clone();
-    gui::run(description, window_sound, window_timing, move |gui, start_over| {
-        if let Err(error) = read(capture, &device, timing, Some(gui), start_over, sound) {
+    let window_navi_gone = navi_gone.clone();
+    gui::run(description, window_sound, window_timing, window_navi_gone, navi_key, move |gui, start_over| {
+        if let Err(error) = read(capture, &device, timing, Some(gui), start_over, navi_gone, sound) {
             eprintln!("{error}");
             let _ = slint::quit_event_loop();
         }
@@ -132,6 +146,7 @@ fn read(
     timing: Arc<Timing>,
     gui: Option<Gui>,
     start_over: Arc<AtomicBool>,
+    navi_gone: Arc<AtomicBool>,
     sound: Arc<Sound>,
 ) -> Result<(), String> {
     let (restart_sender, restart) = channel();
@@ -155,6 +170,8 @@ fn read(
     let mut last_dropped = 0;
     let mut last_frame = Instant::now();
     let mut last_report = Instant::now();
+    let mut eye_found = false;
+    let mut shown_percent = 0;
 
     loop {
         if restart.try_recv().is_ok() || start_over.swap(false, Ordering::Relaxed) {
@@ -163,13 +180,30 @@ fn read(
             }
             cue_at = None;
             flutters = 0;
+            eye_found = false;
             session.restart();
             if let Some(gui) = &gui {
                 gui.set_cue(None);
+                gui.set_likely(None);
                 gui.set_status("Starting over".to_owned(), Tone::Reading);
                 gui.set_latest(String::new());
             }
             log.line(format_args!("Starting over."));
+        }
+        if navi_gone.swap(false, Ordering::Relaxed) {
+            if let Some(cancel) = countdown.take() {
+                let _ = cancel.send(());
+            }
+            cue_at = None;
+            flutters = 0;
+            session.navi_gone();
+            if let Some(gui) = &gui {
+                gui.set_cue(None);
+                gui.set_likely(None);
+                gui.set_latest(String::new());
+                gui.set_status("Navi gone: counting flutters from now".to_owned(), Tone::Reading);
+            }
+            log.line("Navi gone: only flutters from now on count.");
         }
         let frame = match capture.frames.recv_timeout(Duration::from_millis(250)) {
             Ok(frame) => frame,
@@ -211,6 +245,10 @@ fn read(
             }
         }
 
+        if !eye_found && session.expected_eye().is_some() {
+            eye_found = true;
+            log.line(format_args!("Found the eye, {flutters} flutters so far."));
+        }
         if last_report.elapsed() >= SILENCE_REPORT {
             last_report = Instant::now();
             let health = session.take_health();
@@ -227,6 +265,20 @@ fn read(
         }
         for event in events.drain(..) {
             match event {
+                Event::NaviDone { held, .. } => {
+                    log.line(format_args!("Navi looks done. Counting from then: {held} flutters so far."));
+                    if let Some(gui) = &gui {
+                        gui.set_status("Reading flutters".to_owned(), Tone::Reading);
+                    }
+                }
+                Event::ReadAgain { flutters: found, .. } => {
+                    log.line(format_args!("Read the early frames again knowing where the eye is: {found} flutters."));
+                }
+                Event::FoundLookingBack { flutters: found, seconds } => {
+                    log.line(format_args!(
+                        "Ready after {seconds:.1} s of the box. Found {found} flutters from before that, looking back."
+                    ));
+                }
                 Event::Flutter(flutter) => {
                     if let Some(gui) = &gui {
                         gui.set_latest(format!(
@@ -246,6 +298,7 @@ fn read(
                     log.line(format_args!("Counted {frames} skipped game frames from a {:.0} ms gap.", gap * 1000.0));
                 }
                 Event::BoxOpened => {
+                    eye_found = false;
                     log.line("The Yes/No box is up, reading.");
                     flutters = 0;
                     last_report = Instant::now();
@@ -277,11 +330,55 @@ fn read(
                     cue_at = Some(at_seconds);
                     if let Some(gui) = &gui {
                         gui.set_cue(Some(at));
+                        gui.set_likely(None);
+                    }
+                }
+                Event::LikelyCue { seconds: box_seconds, chance, .. } => {
+                    let at_seconds = box_seconds - timing.lead_ms() / 1000.0;
+                    let at = started + Duration::from_secs_f64(at_seconds.max(0.0));
+                    let percent = ((chance * 100.0).round() as u32).min(99);
+                    log.line(format_args!(
+                        "{percent}% chance: press A at zero, in {:.1} s. No state is proven yet.",
+                        at_seconds - seconds
+                    ));
+                    if let Some(cancel) = countdown.replace(start_countdown(at, sound.clone())) {
+                        let _ = cancel.send(());
+                    }
+                    cue_at = Some(at_seconds);
+                    shown_percent = percent;
+                    if let Some(gui) = &gui {
+                        gui.set_cue(Some(at));
+                        gui.set_likely(Some(percent));
+                        gui.set_status(format!("{percent}% chance"), Tone::Warning);
+                    }
+                }
+                Event::LikelyChance { chance } => {
+                    let percent = ((chance * 100.0).round() as u32).min(99);
+                    if percent != shown_percent {
+                        shown_percent = percent;
+                        log.line(format_args!("That press is now a {percent}% chance."));
+                        if let Some(gui) = &gui {
+                            gui.set_likely(Some(percent));
+                            gui.set_status(format!("{percent}% chance"), Tone::Warning);
+                        }
+                    }
+                }
+                Event::LikelyCancelled => {
+                    if let Some(cancel) = countdown.take() {
+                        let _ = cancel.send(());
+                    }
+                    cue_at = None;
+                    log.line("That likely press isn't likely any more. Don't press yet.");
+                    if let Some(gui) = &gui {
+                        gui.set_cue(None);
+                        gui.set_likely(None);
+                        gui.set_status("Reading flutters".to_owned(), Tone::Reading);
                     }
                 }
                 Event::CueCancelled => {
                     if let Some(gui) = &gui {
                         gui.set_cue(None);
+                        gui.set_likely(None);
                         gui.set_status("Cancelled: don't press yet".to_owned(), Tone::Warning);
                     }
                     if let Some(cancel) = countdown.take() {
@@ -293,6 +390,7 @@ fn read(
                 Event::BoxGone { seconds: gone, heart_piece, .. } => {
                     if let Some(gui) = &gui {
                         gui.set_cue(None);
+                        gui.set_likely(None);
                         gui.set_status("Waiting for the Yes/No box".to_owned(), Tone::Reading);
                     }
                     if let Some(cancel) = countdown.take() {

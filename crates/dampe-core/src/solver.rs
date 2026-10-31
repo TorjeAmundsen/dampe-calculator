@@ -85,16 +85,37 @@ fn compare(mut blinks: Blinks, offset: i64, observations: &[Observation], now: i
         result.extras_since_hit += passed;
         // Several tracks can report the same flutter, with different counts
         let mut hit = false;
+        let mut partly = false;
         while let Some(observation) = observations.get(next)
             && observation.start == start
         {
+            // Something can hide the last of 4 blinks, like his jaw
+            let last_hidden = flutter.count == 4 && observation.count == 3;
             if observation.count == flutter.count && !hit {
                 hit = true;
+            } else if last_hidden && !partly {
+                partly = true;
             } else {
                 result.extras += 1;
                 result.extras_since_hit += 1;
             }
             next += 1;
+        }
+        // Or the first of 4, and then it looks like a 3 starting one blink later
+        if !hit
+            && !partly
+            && flutter.count == 4
+            && let Some(observation) = observations.get(next)
+            && observation.start == start + 3
+            && observation.count == 3
+        {
+            partly = true;
+            next += 1;
+        }
+        // Partly seen says little for a reading, since a wrong one can land there by chance too, but
+        // it isn't against it either
+        if partly && !hit {
+            continue;
         }
         if hit {
             result.hits += 1;
@@ -199,13 +220,39 @@ mod tests {
         assert!(finds(&observations, now, 1_234_567, 37));
     }
 
+    /// The jaw can hide one blink of 4, at either end. Those can't count against a reading, or his
+    /// head-on angle can't ever lock, but they don't count for it either: when they did, a wrong
+    /// reading got locked on a real recording.
+    #[test]
+    fn a_four_with_an_end_hidden_is_a_hit() {
+        let (observations, now) = observed(1_234_567, 37, 12, 0);
+        let candidate = Candidate { seed: 1_234_567, link_first: 37, offset: 0 };
+        let four = observations.iter().position(|o| o.count == 4).expect("no 4 in there");
+        let exact = Match { hits: 11, ..Match::default() };
+        let mut last_hidden = observations.clone();
+        last_hidden[four].count = 3;
+        assert_eq!(candidate.compare(&last_hidden, now), exact);
+        let mut first_hidden = observations.clone();
+        first_hidden[four].count = 3;
+        first_hidden[four].start += 3;
+        assert_eq!(candidate.compare(&first_hidden, now), exact);
+        // The control: one frame off isn't a hidden blink
+        let mut off = observations.clone();
+        off[four].count = 3;
+        off[four].start += 2;
+        let result = candidate.compare(&off, now);
+        assert_eq!((result.hits, result.misses), (11, 1));
+    }
+
     /// A wrong count has to count against a reading, or wrong reads could never be noticed.
     #[test]
     fn a_wrong_count_is_a_miss_and_an_extra() {
         let (mut observations, now) = observed(1_234_567, 37, 8, 0);
         let candidate = Candidate { seed: 1_234_567, link_first: 37, offset: 0 };
         assert_eq!(candidate.compare(&observations, now), Match { hits: 8, ..Match::default() });
-        observations[4].count = 7 - observations[4].count;
+        // A 3 can't look like a 4: that takes a blink that wasn't there
+        let three = observations.iter().position(|o| o.count == 3).expect("no 3 in there");
+        observations[three].count = 4;
         let result = candidate.compare(&observations, now);
         assert_eq!((result.hits, result.misses, result.extras), (7, 1, 1));
     }

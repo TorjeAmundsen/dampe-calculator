@@ -3,7 +3,7 @@
 //! video ends it.
 
 use crate::rng::{BOX_GONE_TO_ROLL, StateWalk, flutter_len, rolls_heart_piece};
-use crate::solver::{Candidate, Observation, SEARCH_MISSES, scan_from};
+use crate::solver::{Candidate, Match, Observation, SEARCH_MISSES, scan_from};
 
 /// Flutters a reading must have seen to be considered at all. With [`CONFIRMATIONS`], that makes 8.
 /// Against RNG watch values, 7 gave a wrong state with wrong Heart Piece frames, and 8 gave none in
@@ -45,6 +45,41 @@ pub enum Status {
     Locked,
 }
 
+/// How likely a read's parts are, for weighing readings against each other: a real flutter being
+/// read at all, not being read, and a stray landing exactly where a reading has nothing. Learning the
+/// first two per read made no measurable difference on 10 recordings.
+const P_READ: f64 = 0.85;
+const P_MISSED: f64 = 0.15;
+const P_STRAY: f64 = 0.003;
+
+fn log_weight(m: &Match) -> f64 {
+    f64::from(m.hits) * P_READ.ln() + f64::from(m.misses) * P_MISSED.ln() + f64::from(m.extras) * P_STRAY.ln()
+}
+
+/// The readings with less than this many hits are no better than what wasn't found at all: the real
+/// reading can be missing from the set, when a scan started from a stray.
+const UNEXPLAINED_HITS: f64 = 4.0;
+/// The most likely readings looked at for windows. The others only count against them.
+const LIKELY_READINGS: usize = 300;
+/// How far ahead an early window can be, in game frames.
+const LIKELY_HORIZON: i64 = 600;
+
+/// The chance every frame of an early window needs. On 10 RNG watch recordings, aiming at the middle
+/// of windows at 90% and up was right 51 of 52 times, 70-89% 23 of 26, and 60-69% only 5 of 9.
+pub const LIKELY_MIN_CONFIDENCE: f64 = 0.7;
+
+/// A window that probably gives the Heart Piece, before a state is proven.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LikelyWindow {
+    pub window: Window,
+    /// The lowest chance of any of its frames, 0 to 1.
+    pub confidence: f64,
+    /// The chance of the Heart Piece when aiming at its middle, 0 to 1.
+    pub chance: f64,
+    /// The most hits any reading has.
+    pub best_hits: u32,
+}
+
 /// Game frames a dig can start to give the Heart Piece, for every remaining reading.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Window {
@@ -54,6 +89,11 @@ pub struct Window {
 }
 
 impl Window {
+    /// The frame to aim for: its middle.
+    pub fn target(&self) -> i64 {
+        (self.first_roll + self.last_roll) / 2
+    }
+
     /// The game frames the text box should disappear on, inclusive.
     pub fn box_gone(&self) -> (i64, i64) {
         (self.first_roll - BOX_GONE_TO_ROLL, self.last_roll - BOX_GONE_TO_ROLL)
@@ -67,6 +107,8 @@ struct Followed {
     /// Its hits when it reached [`MIN_HITS`]. Only hits after that are predictions.
     hits_when_found: Option<u32>,
     confirmed: u32,
+    /// How it compared to the observations last time.
+    latest: Match,
 }
 
 /// Follows flutters to a trusted state.
@@ -137,6 +179,29 @@ impl Tracker {
         self.added_since_scan += 1;
     }
 
+    /// Replaces what was read up to game frame `through` with a better read. New flutters this finds
+    /// aren't predictions, so readings' counts of those stay as they were.
+    pub fn replace_through(&mut self, through: i64, flutters: &[(Observation, bool)], now: i64) {
+        let before: Vec<u32> =
+            self.followed.iter().map(|f| f.candidate.compare(&self.observations, now).hits).collect();
+        self.observations.retain(|o| o.start > through);
+        self.clean_starts.retain(|&start| start > through);
+        for &(observation, clean) in flutters.iter().filter(|(o, _)| o.start <= through) {
+            self.add(observation, clean);
+        }
+        self.clean_starts.sort_unstable();
+        let observations = &self.observations;
+        for (followed, before) in self.followed.iter_mut().zip(before) {
+            if let Some(hits) = &mut followed.hits_when_found {
+                let after = followed.candidate.compare(observations, now).hits;
+                *hits = (*hits + after).saturating_sub(before);
+            }
+        }
+        // The first flutters may be different ones now, and worth scanning from
+        self.last_anchor = None;
+        self.update(now);
+    }
+
     /// Judges the flutters added so far, as of game frame `now`.
     pub fn update(&mut self, now: i64) {
         let excess = self.observations.len().saturating_sub(MAX_OBSERVATIONS);
@@ -151,6 +216,11 @@ impl Tracker {
         let observations = &self.observations;
         self.followed.retain_mut(|followed| {
             let result = followed.candidate.compare(observations, now);
+            followed.latest = result;
+            // Flutters from before a reading's first one say nothing about it
+            let first = followed.candidate.blinks().next_flutter().start + followed.candidate.offset;
+            followed.latest.extras -=
+                (observations.partition_point(|o| o.start < first) as u32).min(followed.latest.extras);
             if followed.hits_when_found.is_none() && result.hits >= MIN_HITS {
                 followed.hits_when_found = Some(result.hits);
             }
@@ -184,16 +254,18 @@ impl Tracker {
         if !first_scan && self.added_since_scan < FLUTTERS_BETWEEN_SCANS {
             return false;
         }
+        // The newest flutter with enough after it. Older ones can't do better, since they have more
+        // of what went wrong behind them, and a scan a long way back might never catch up
         let last_anchor = self.last_anchor;
-        let Some(&anchor_start) = self.clean_starts.iter().find(|&&start| last_anchor.is_none_or(|last| start > last))
-        else {
+        let observations = &self.observations;
+        let Some(&anchor_start) = self.clean_starts.iter().rev().find(|&&start| {
+            let later = observations.len() - observations.partition_point(|o| o.start < start);
+            later >= MIN_OBSERVATIONS && last_anchor.is_none_or(|last| start > last)
+        }) else {
             return false;
         };
         let anchor = self.observations.partition_point(|o| o.start < anchor_start);
         let from_anchor = &self.observations[anchor..];
-        if from_anchor.len() < MIN_OBSERVATIONS {
-            return false;
-        }
         let found = scan_from(from_anchor, now, MIN_HITS_TO_KEEP);
         self.last_anchor = Some(from_anchor[0].start);
         self.added_since_scan = 0;
@@ -201,6 +273,7 @@ impl Tracker {
             candidate,
             hits_when_found: None,
             confirmed: 0,
+            latest: Match::default(),
         }));
         true
     }
@@ -213,6 +286,72 @@ impl Tracker {
         let mut states = self.candidates.iter().map(|candidate| candidate.state_at_flutter(frame));
         let Some(first) = states.next() else { return false };
         states.all(|state| state == first)
+    }
+
+    /// The chance of each frame in `frames` giving the Heart Piece, going by how well each reading
+    /// explains what was seen, and the most hits any reading has.
+    fn chances(&self, frames: std::ops::Range<i64>) -> Option<(Vec<f64>, u32)> {
+        let mut weighted: Vec<(f64, &Followed)> =
+            self.followed.iter().map(|followed| (log_weight(&followed.latest), followed)).collect();
+        weighted.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let &(best, best_followed) = weighted.first()?;
+        // The chance the real reading isn't here at all, as a reading that explains only a few
+        let explained = f64::from(best_followed.latest.hits + best_followed.latest.extras);
+        let unexplained =
+            UNEXPLAINED_HITS * P_READ.ln() + (explained - UNEXPLAINED_HITS).max(0.0) * P_STRAY.ln() - best;
+        let total: f64 = weighted.iter().map(|(weight, _)| (weight - best).exp()).sum::<f64>() + unexplained.exp();
+        let mut walks: Vec<_> = weighted
+            .iter()
+            .take(LIKELY_READINGS)
+            .map(|(weight, followed)| {
+                ((weight - best).exp() / total, StateWalk::new(followed.candidate.blinks()), followed.candidate.offset)
+            })
+            .collect();
+        let chances = frames
+            .map(|frame| {
+                walks
+                    .iter_mut()
+                    .map(
+                        |(weight, walk, offset)| {
+                            if rolls_heart_piece(walk.state_for_roll(frame - *offset)) { *weight } else { 0.0 }
+                        },
+                    )
+                    .sum()
+            })
+            .collect();
+        Some((chances, best_followed.latest.hits))
+    }
+
+    /// The first window from game frame `from` on, at least `min_frames` long, where every frame has
+    /// at least `min_confidence` of giving the Heart Piece.
+    pub fn likely_window(&self, from: i64, min_frames: i64, min_confidence: f64) -> Option<LikelyWindow> {
+        let (chances, best_hits) = self.chances(from..from + LIKELY_HORIZON)?;
+        let mut run: Option<(i64, f64)> = None;
+        for (frame, &chance) in (from..).zip(&chances) {
+            if chance >= min_confidence {
+                let (start, lowest) = run.unwrap_or((frame, chance));
+                run = Some((start, lowest.min(chance)));
+            } else if let Some((start, lowest)) = run.take()
+                && frame - start >= min_frames
+            {
+                let window = Window { first_roll: start, last_roll: frame - 1 };
+                let chance = chances[(window.target() - from) as usize];
+                return Some(LikelyWindow { window, confidence: lowest, chance, best_hits });
+            }
+        }
+        None
+    }
+
+    /// The chance of a dig on game frame `frame` giving the Heart Piece.
+    pub fn chance_at(&self, frame: i64) -> f64 {
+        self.chances(frame..frame + 1).map_or(0.0, |(chances, _)| chances[0])
+    }
+
+    /// The lowest chance of any frame of `window` giving the Heart Piece.
+    pub fn window_confidence(&self, window: Window) -> f64 {
+        self.chances(window.first_roll..window.last_roll + 1)
+            .and_then(|(chances, _)| chances.into_iter().min_by(f64::total_cmp))
+            .unwrap_or(0.0)
     }
 
     /// The first time a dig gives the Heart Piece for every reading, from game frame `from` on,
@@ -300,14 +439,31 @@ mod tests {
     fn scans_start_from_clean_flutters() {
         let all = flutters(3_141_592, 40, 12);
         let mut tracker = Tracker::new();
-        tracker.add(Observation { start: all[0].start - 20, count: 3 }, false);
-        for &observation in &all[..7] {
-            tracker.add(observation, true);
+        tracker.add(all[0], true);
+        tracker.add(Observation { start: all[1].start - 20, count: 3 }, false);
+        for &observation in &all[1..7] {
+            tracker.add(observation, false);
         }
         let last = all[6];
         tracker.update(last.start + flutter_len(last.count) + 8);
         assert_eq!(tracker.last_anchor, Some(all[0].start));
-        assert!(!tracker.candidates().is_empty());
+    }
+
+    /// After a stretch of misreads, a scan has to start from what's recent, or it never recovers.
+    #[test]
+    fn scans_start_from_recent_flutters() {
+        let all = flutters(3_141_592, 40, 30);
+        let mut tracker = Tracker::new();
+        // A long stretch of nothing useful
+        for i in 0..20 {
+            tracker.add(Observation { start: 100 + i * 37, count: 3 }, true);
+        }
+        for &observation in &all[..20] {
+            tracker.add(observation, true);
+        }
+        let last = all[19];
+        tracker.update(last.start + flutter_len(last.count) + 8);
+        assert_eq!(tracker.last_anchor, Some(all[14].start));
     }
 
     /// Flutters the reading wanted going unseen, while others show up, have to end the lock.
@@ -345,7 +501,12 @@ mod tests {
         feed(&mut tracker, &all[..17]);
         assert!(tracker.is_locked());
         let candidate = tracker.candidates()[0];
-        tracker.followed.push(Followed { candidate, hits_when_found: Some(1000), confirmed: 0 });
+        tracker.followed.push(Followed {
+            candidate,
+            hits_when_found: Some(1000),
+            confirmed: 0,
+            latest: Match::default(),
+        });
         feed(&mut tracker, &all[17..]);
         assert!(tracker.is_locked());
         assert!(tracker.followed.iter().all(|f| f.hits_when_found != Some(1000)));
@@ -360,10 +521,72 @@ mod tests {
         assert!(tracker.is_locked());
         let mut other = tracker.candidates()[0];
         other.seed = next_different(other.seed);
-        tracker.followed.push(Followed { candidate: other, hits_when_found: Some(7), confirmed: CONFIRMATIONS });
+        tracker.followed.push(Followed {
+            candidate: other,
+            hits_when_found: Some(7),
+            confirmed: CONFIRMATIONS,
+            latest: Match::default(),
+        });
         tracker.candidates.push(other);
         assert!(!tracker.same_trajectory(), "the control: these readings really differ");
         assert!(tracker.is_locked());
+    }
+
+    /// A state just found has 6 hits against no competition, so it's likely but not yet proven.
+    #[test]
+    fn a_likely_window_comes_before_the_lock_and_rolls_the_heart_piece() {
+        let all = flutters(3_141_592, 40, 16);
+        let mut tracker = Tracker::new();
+        feed(&mut tracker, &all[..7]);
+        assert!(!tracker.is_locked());
+        let last = all[6];
+        let from = last.start + 100;
+        // One may not come up right away: the Heart Piece is a 1 in 10 roll
+        let likely = (0..10)
+            .find_map(|i| tracker.likely_window(from + i * LIKELY_HORIZON, 13, LIKELY_MIN_CONFIDENCE))
+            .expect("no likely window");
+        let truth = tracker.followed.iter().find(|f| f.candidate.seed == 3_141_592).expect("the true reading");
+        let mut walk = StateWalk::new(truth.candidate.blinks());
+        for frame in likely.window.first_roll..=likely.window.last_roll {
+            assert!(rolls_heart_piece(walk.state_for_roll(frame - truth.candidate.offset)));
+        }
+        assert!(tracker.window_confidence(likely.window) >= LIKELY_MIN_CONFIDENCE);
+    }
+
+    /// With almost nothing seen, nothing should look likely.
+    #[test]
+    fn nothing_is_likely_from_a_few_flutters() {
+        let all = flutters(3_141_592, 40, 3);
+        let mut tracker = Tracker::new();
+        feed(&mut tracker, &all);
+        assert_eq!(tracker.likely_window(all[2].start + 100, 13, LIKELY_MIN_CONFIDENCE), None);
+    }
+
+    /// The chance is the share of the readings' weight that gets the Heart Piece on that frame.
+    #[test]
+    fn the_chance_is_the_share_of_readings_that_roll_it() {
+        let all = flutters(3_141_592, 40, 16);
+        let mut tracker = Tracker::new();
+        feed(&mut tracker, &all[..16]);
+        let truth = tracker.followed[0];
+        // Far ahead, where a reading and one with another seed differ
+        let other = Candidate { seed: truth.candidate.seed + 1, ..truth.candidate };
+        let mut walk_a = StateWalk::new(truth.candidate.blinks());
+        let mut walk_b = StateWalk::new(other.blinks());
+        let frame = (3000..20000)
+            .find(|&frame| {
+                rolls_heart_piece(walk_a.state_for_roll(frame - truth.candidate.offset))
+                    && !rolls_heart_piece(walk_b.state_for_roll(frame - other.offset))
+            })
+            .expect("no such frame");
+        let strong = Match { hits: 30, ..Match::default() };
+        tracker.followed = vec![
+            Followed { candidate: truth.candidate, hits_when_found: None, confirmed: 0, latest: strong },
+            Followed { candidate: other, hits_when_found: None, confirmed: 0, latest: strong },
+        ];
+        assert!((tracker.chance_at(frame) - 0.5).abs() < 0.01, "{}", tracker.chance_at(frame));
+        tracker.followed.truncate(1);
+        assert!(tracker.chance_at(frame) > 0.99, "the control: {}", tracker.chance_at(frame));
     }
 
     /// The window has to be judged by the model, not by anything the tracker computes itself.

@@ -12,6 +12,7 @@
 
 pub mod detector;
 pub mod eye;
+pub mod navi;
 pub mod picture;
 pub mod rng;
 pub mod session;

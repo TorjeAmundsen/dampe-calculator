@@ -19,6 +19,7 @@ global Colors {
     out property <color> field: #2d2d2d;
     out property <color> frame: #555555;
     out property <color> bar: #3d9bff;
+    out property <color> likely: #e0a040;
 }
 
 component Mark inherits Rectangle {
@@ -60,13 +61,18 @@ export component MainWindow inherits Window {
     in property <bool> pulse;
     // The moment to press
     in property <bool> press;
+    // The countdown is for a press that's probably right, not proven
+    in property <bool> likely;
+    in property <string> likely-text;
     in-out property <int> platform-index: 1;
     in property <string> timing;
     in-out property <bool> sound-on;
     in-out property <float> volume: 50;
     in property <[string]> log;
 
+    in property <string> navi-key;
     callback start-over();
+    callback navi-gone();
     callback platform-changed();
     callback sound-changed();
     callback volume-released();
@@ -79,7 +85,7 @@ export component MainWindow inherits Window {
             horizontal-stretch: 1;
             background: black;
             border-width: root.press ? 6px : root.pulse ? 3px : 1px;
-            border-color: root.press ? Colors.reached : root.pulse ? white : Colors.frame;
+            border-color: root.press ? (root.likely ? Colors.likely : Colors.reached) : root.pulse ? white : Colors.frame;
 
             property <length> unit: min(self.width / 720, self.height / 540);
 
@@ -136,7 +142,7 @@ export component MainWindow inherits Window {
 
             Rectangle {
                 height: 84px;
-                background: root.press ? Colors.reached : root.pulse ? #5a5a5a : Colors.field;
+                background: root.press ? (root.likely ? Colors.likely : Colors.reached) : root.pulse ? #5a5a5a : Colors.field;
                 border-width: 1px;
                 border-color: Colors.frame;
 
@@ -145,7 +151,7 @@ export component MainWindow inherits Window {
                     y: parent.height - self.height;
                     width: parent.width * root.countdown-share;
                     height: 14px;
-                    background: root.press ? white : Colors.bar;
+                    background: root.press ? white : root.likely ? Colors.likely : Colors.bar;
                 }
 
                 Text {
@@ -157,6 +163,16 @@ export component MainWindow inherits Window {
                     font-weight: 700;
                     horizontal-alignment: center;
                     vertical-alignment: center;
+                }
+
+                Text {
+                    y: 2px;
+                    height: 16px;
+                    text: root.likely-text;
+                    color: root.press ? black : Colors.likely;
+                    font-size: 12px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
                 }
             }
 
@@ -259,10 +275,23 @@ export component MainWindow inherits Window {
                 }
             }
 
-            Button {
-                text: "Start over";
-                clicked => {
-                    root.start-over();
+            HorizontalLayout {
+                spacing: 8px;
+
+                Button {
+                    horizontal-stretch: 1;
+                    text: "Navi gone (" + root.navi-key + ")";
+                    clicked => {
+                        root.navi-gone();
+                    }
+                }
+
+                Button {
+                    horizontal-stretch: 1;
+                    text: "Start over";
+                    clicked => {
+                        root.start-over();
+                    }
                 }
             }
 

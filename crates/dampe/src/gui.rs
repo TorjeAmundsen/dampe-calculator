@@ -180,6 +180,15 @@ impl Gui {
         });
     }
 
+    /// Marks the running countdown as only likely, at this percentage.
+    pub fn set_likely(&self, percent: Option<u32>) {
+        self.on_ui(move |window| {
+            window.set_likely(percent.is_some());
+            window
+                .set_likely_text(percent.map_or_else(SharedString::new, |percent| format!("{percent}% chance").into()));
+        });
+    }
+
     /// When the countdown reaches zero, if one's running.
     pub fn set_cue(&self, cue: Option<Instant>) {
         *self.cue.lock().unwrap() = cue;
@@ -191,6 +200,8 @@ pub fn run(
     device: String,
     sound: Arc<Sound>,
     timing: Arc<Timing>,
+    navi_gone: Arc<AtomicBool>,
+    navi_key: String,
     read: impl FnOnce(Gui, Arc<AtomicBool>) + Send + 'static,
 ) -> Result<(), String> {
     slint::BackendSelector::new()
@@ -231,6 +242,8 @@ pub fn run(
     let start_over = Arc::new(AtomicBool::new(false));
     let flag = start_over.clone();
     window.on_start_over(move || flag.store(true, Ordering::Relaxed));
+    window.set_navi_key(navi_key.into());
+    window.on_navi_gone(move || navi_gone.store(true, Ordering::Relaxed));
 
     let gui = Gui { window: window.as_weak(), picture_pending: Arc::new(AtomicBool::new(false)), cue: Arc::default() };
 

@@ -7,12 +7,13 @@ use std::io::Read;
 use std::process::{Command, Stdio};
 
 use dampe_core::detector::{Cadence, Detector, Flutter};
+use dampe_core::navi::NaviWatch;
 use dampe_core::picture::{HEIGHT, Luma, Normalizer, WIDTH};
 use dampe_core::rng::{self, StateWalk, flutter_len, rolls_heart_piece};
 use dampe_core::session::{Event, Session};
 use dampe_core::solver::Observation;
 use dampe_core::textbox::{Change, TextboxWatch};
-use dampe_core::tracker::Tracker;
+use dampe_core::tracker::{LIKELY_MIN_CONFIDENCE, Tracker};
 
 /// The RNG watch's state per game frame, in the recording's own game frames.
 struct Truth {
@@ -95,12 +96,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let (mut video, mut truth_path) = (None, None);
     let mut session = false;
     let mut needs_box = true;
+    let mut navi_gone_at = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         if arg == "--truth" {
             truth_path = args.next().cloned();
         } else if arg == "--session" {
             session = true;
+        } else if arg == "--navi-gone-at" {
+            navi_gone_at = args.next().and_then(|frame| frame.parse().ok());
         } else if arg == "--no-box" {
             needs_box = false;
         } else {
@@ -118,7 +122,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         .map_err(|e| format!("couldn't start ffmpeg: {e}"))?;
     let mut pipe = child.stdout.take().ok_or("ffmpeg has no output")?;
     if session {
-        run_session(&mut pipe, width, height, needs_box);
+        run_session(&mut pipe, width, height, needs_box, navi_gone_at);
         let _ = child.wait();
         return Ok(());
     }
@@ -128,6 +132,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let mut normalizer = Normalizer::new();
     let mut cadence = Cadence::new();
     let mut textbox = TextboxWatch::default();
+    let mut navi = NaviWatch::default();
+    if !needs_box {
+        navi.box_opened();
+    }
     let mut detector = Detector::new();
     let mut tracker = Tracker::new();
     let mut seen = Vec::<(i64, Flutter)>::new();
@@ -137,6 +145,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let mut game_to_truth = Vec::<Option<usize>>::new();
     let mut video_frame = 0u64;
     let mut eye_errors = Vec::new();
+    let mut slowest_push = 0f64;
+    let mut calibration = Calibration::default();
+    let mut early_target = None;
+    let mut gains = Vec::new();
     let mut eye_snaps: Vec<f32> = Vec::new();
 
     while pipe.read_exact(&mut raw).is_ok() {
@@ -147,9 +159,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
         if !cadence.is_new_frame(frame) || !normalizer.process(frame, &mut picture) {
             continue;
         }
+        navi.frame(&picture);
         if needs_box && let Some(area) = normalizer.game_area() {
             match textbox.observe(frame, chroma, area) {
-                Some(Change::Opened) => println!("box opened at video frame {current}"),
+                Some(Change::Opened) => {
+                    println!("box opened at video frame {current}");
+                    navi.box_opened();
+                }
                 Some(Change::Closed) => println!("box closed at video frame {current}"),
                 None => {}
             }
@@ -158,9 +174,32 @@ pub fn run(args: &[String]) -> Result<(), String> {
             }
         }
         game_to_truth.push(truth.as_ref().and_then(|truth| truth.by_video.get(&current).copied()));
+        let pushed = std::time::Instant::now();
         let (_, flutters) = detector.push(&picture);
+        slowest_push = slowest_push.max(pushed.elapsed().as_secs_f64());
+        if let Some(reread) = detector.take_reread()
+            && let Some(counted) = navi.admit_reread(reread.through, &reread.flutters)
+        {
+            let observations: Vec<_> =
+                counted.iter().map(|f| (Observation { start: f.start, count: f.count }, f.is_clean())).collect();
+            let before = seen.iter().filter(|(_, f)| f.start <= reread.through).count();
+            seen.retain(|(_, f)| f.start > reread.through);
+            let frame = current as i64;
+            seen.extend(counted.iter().filter(|f| f.start <= reread.through).map(|&f| (frame, f)));
+            println!(
+                "read again through game frame {}: {before} flutters became {}",
+                reread.through,
+                counted.iter().filter(|f| f.start <= reread.through).count()
+            );
+            tracker.replace_through(reread.through, &observations, game_to_truth.len() as i64 - 1);
+        }
         if let Some(snap) = detector.last_eye_snap() {
             eye_snaps.push(snap);
+        }
+        let mut flutters: Vec<_> = flutters.into_iter().filter_map(|flutter| navi.admit(flutter)).collect();
+        if let Some((from, held)) = navi.advance(game_to_truth.len() as i64 - 1) {
+            println!("Navi looks done at video frame {current}: counts from game frame {from}, {} held", held.len());
+            flutters.splice(0..0, held);
         }
         for flutter in flutters {
             if flutter.is_clean()
@@ -171,11 +210,27 @@ pub fn run(args: &[String]) -> Result<(), String> {
             seen.push((current as i64, flutter));
             flutters_since_reset += 1;
             tracker.add(Observation { start: flutter.start, count: flutter.count }, flutter.is_clean());
-            tracker.update(game_to_truth.len() as i64 - 1);
+            let now = game_to_truth.len() as i64 - 1;
+            tracker.update(now);
+            if let Some(truth) = &truth
+                && !tracker.is_locked()
+                && let Some(early) = tracker.likely_window(now + 70, 13, 0.3)
+            {
+                check_early(truth, &game_to_truth, flutter.start, now, early, flutters_since_reset, &mut calibration);
+                if early.confidence >= LIKELY_MIN_CONFIDENCE && early_target.is_none() {
+                    early_target = Some((early.window.first_roll + early.window.last_roll) / 2);
+                }
+            }
             if tracker.is_locked() {
                 score.locks += 1;
                 score.flutters_to_lock.push(flutters_since_reset);
                 score.lock_frames.push(game_to_truth.len() as i64 - 1);
+                if let Some(certain) = tracker.next_window(game_to_truth.len() as i64 + 99, 13) {
+                    let target = (certain.first_roll + certain.last_roll) / 2;
+                    gains
+                        .push(early_target.take().map(|early| ((target - early) as f64 / 19.98 * 10.0).round() / 10.0));
+                }
+                early_target = None;
                 if let Some(truth) = &truth {
                     check_lock(&tracker, truth, &game_to_truth, flutter.start, &mut score);
                 }
@@ -187,6 +242,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let _ = child.wait();
 
     println!("video frames {video_frame}, game frames {}, flutters read {}", game_to_truth.len(), seen.len());
+    println!("slowest game frame to read: {:.0} ms", slowest_push * 1000.0);
     let health = detector.take_health();
     println!("detector: {health:?}, region {:?}", detector.region());
     eye_snaps.sort_by(f32::total_cmp);
@@ -209,6 +265,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
         "locks {}: state right {}, wrong {}; flutters per lock {:?}",
         score.locks, score.states_right, score.states_wrong, score.flutters_to_lock
     );
+    println!("seconds saved per read by a likely window, None if there was none: {gains:?}");
+    println!(
+        "early windows by chance at target, tenths: (windows, target right, all right): {:?}",
+        calibration.by_level
+    );
+    println!(
+        "early at 0.6+: (flutters so far, chance, right): {:?}",
+        calibration.each.iter().filter(|e| e.1 >= 0.6).map(|e| (e.0, (e.1 * 100.0) as u32, e.2)).collect::<Vec<_>>()
+    );
     let seconds: Vec<f64> =
         score.lock_frames.iter().map(|&frame| (frame as f64 / 19.98 * 10.0).round() / 10.0).collect();
     println!("seconds from the start of reading to each lock: {seconds:?}");
@@ -222,7 +287,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
 }
 
 /// Runs the recording the way the live app does, with video frames as its clock.
-fn run_session(pipe: &mut impl Read, width: usize, height: usize, needs_box: bool) {
+fn run_session(pipe: &mut impl Read, width: usize, height: usize, needs_box: bool, navi_gone_at: Option<u64>) {
     let mut raw = vec![0u8; width * height * 3 / 2];
     let mut session = Session::new(true, needs_box);
     let mut events = Vec::new();
@@ -230,6 +295,10 @@ fn run_session(pipe: &mut impl Read, width: usize, height: usize, needs_box: boo
     while pipe.read_exact(&mut raw).is_ok() {
         let (luma, chroma) = raw.split_at(width * height);
         let frame = Luma { data: luma, width, height, stride: width };
+        if navi_gone_at == Some(video_frame) {
+            println!("video frame {video_frame}: Navi gone");
+            session.navi_gone();
+        }
         let seen = session.frames_seen();
         session.push(frame, chroma, video_frame as f64 * 1001.0 / 60000.0, &mut events);
         if session.frames_seen() != seen
@@ -241,12 +310,59 @@ fn run_session(pipe: &mut impl Read, width: usize, height: usize, needs_box: boo
         }
         video_frame += 1;
         for event in events.drain(..) {
-            if !matches!(event, Event::Flutter(_)) {
+            if std::env::var_os("DAMPE_FLUTTERS").is_some() || !matches!(event, Event::Flutter(_)) {
                 println!("video frame {video_frame}: {event:?}");
             }
         }
     }
     println!("game frames per second: {:.3}", session.fps());
+}
+
+/// How early windows did against the watch, by their confidence.
+#[derive(Default)]
+struct Calibration {
+    /// By confidence in tenths: windows, whose middle frame rolled it, whose every frame did.
+    by_level: BTreeMap<u32, (u32, u32, u32)>,
+    /// (flutters so far, confidence, right) for each.
+    each: Vec<(usize, f64, bool)>,
+}
+
+/// Checks a window offered before a lock against the watch.
+fn check_early(
+    truth: &Truth,
+    game_to_truth: &[Option<usize>],
+    last_start: i64,
+    now: i64,
+    early: dampe_core::tracker::LikelyWindow,
+    flutters: usize,
+    calibration: &mut Calibration,
+) {
+    let Some(&Some(anchor)) = game_to_truth.get(last_start as usize) else { return };
+    let game_to_index = anchor as i64 - last_start;
+    let stop = ((now + game_to_index + 1) as usize..truth.frames.len())
+        .find(|&index| truth.draws_on(index).is_none_or(|draws| draws > 3))
+        .unwrap_or(truth.frames.len());
+    let window = early.window;
+    if window.last_roll + game_to_index >= stop as i64 {
+        return;
+    }
+    let rolls = |frame: i64| {
+        let index = (frame + game_to_index) as usize;
+        let mut state = truth.frames[index - 1].1;
+        let draws = truth.draws_on(index).unwrap_or(0);
+        if draws == 1 || draws == 3 {
+            state = rng::next(state);
+        }
+        rolls_heart_piece(state)
+    };
+    let middle = rolls((window.first_roll + window.last_roll) / 2);
+    let all = (window.first_roll..=window.last_roll).all(rolls);
+    let level = (early.chance * 10.0).floor() as u32;
+    let entry = calibration.by_level.entry(level).or_default();
+    entry.0 += 1;
+    entry.1 += u32::from(middle);
+    entry.2 += u32::from(all);
+    calibration.each.push((flutters, early.chance, middle));
 }
 
 /// Checks a lock against the watch: the predicted state on every following frame, up to the next
@@ -336,6 +452,16 @@ fn report_flutters(truth: &Truth, game_to_truth: &[Option<usize>], seen: &[(i64,
         })
         .count();
     let missed = scored.len() - exact - wrong_count - shifted;
+    if std::env::var_os("DAMPE_PAIRS").is_some() {
+        for (&start, &count) in &flutters {
+            let near: Vec<_> = read
+                .iter()
+                .filter(|&(&at, _)| at.abs_diff(start) <= 12)
+                .map(|(&at, &c)| (at as i64 - start as i64, c))
+                .collect();
+            println!("truth {start} {count}: read {near:?}");
+        }
+    }
     let extra = read
         .keys()
         .filter(|&&start| start <= scored.last().map_or(0, |&(&s, _)| s))

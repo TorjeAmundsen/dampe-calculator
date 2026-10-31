@@ -74,6 +74,11 @@ const REGION_MARGIN: u16 = 50;
 /// come every 3 seconds or so, so this is several missed in a row. It keeps a wrong region from
 /// hiding the eye for good.
 const REGION_MAX_SILENCE: i64 = 300;
+/// Game frames kept for reading again once the eye's region is known: 30 seconds, about 150 MB.
+const ARCHIVE_FRAMES: usize = 600;
+/// Tracks in progress can still end in a flutter this many game frames back, so what's newer stays
+/// as first read.
+const REREAD_KEEP_FRAMES: i64 = 20;
 /// The shown eye box, half its width and height.
 const EYE_BOX_X: u16 = 10;
 const EYE_BOX_Y: u16 = 7;
@@ -83,6 +88,13 @@ const MIN_FIT: f32 = 0.84;
 const FLANK: i64 = 2;
 /// How far past a track's first frame a flutter's start may be, for a stray frame before it.
 const START_SLACK: i64 = 3;
+
+/// The first read of the frames up to `through`, redone now that more is known.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reread {
+    pub through: i64,
+    pub flutters: Vec<Flutter>,
+}
 
 /// A flutter seen in the video.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -152,6 +164,8 @@ pub struct FrameInfo {
     pub blobs: usize,
     /// So much differed from the reference that it must be bad.
     pub bad_reference: bool,
+    /// The reference became ready on this frame, so the flutters with it were found looking back.
+    pub finished_learning: bool,
 }
 
 /// Counts game frames: a video frame that differs from the one before it starts a new one. Virtual
@@ -461,6 +475,9 @@ pub struct Detector {
     blobs: BlobFinder,
     centers: Vec<Blob>,
     tracks: Vec<Track>,
+    /// The frames so far, until the eye's region is known and they've been read again with it.
+    archive: Option<VecDeque<(i64, Arc<[u8]>)>>,
+    reread: Option<Reread>,
     /// The frames so far, until the reference is ready, to go through once it is. Flutters don't
     /// wait for the reference, and every one counts.
     learning: Option<Vec<(i64, Arc<[u8]>)>>,
@@ -479,6 +496,7 @@ pub struct Detector {
     last_eye_snap: Option<f32>,
     /// The only part of the picture that can hold the eye, once that's known.
     region: Option<Rect>,
+    reread_due: bool,
     /// The latest game frame a flutter was recognized on, for giving up on a region.
     last_flutter_frame: i64,
 }
@@ -499,6 +517,8 @@ impl Detector {
             blobs: BlobFinder::new(),
             centers: Vec::new(),
             tracks: Vec::new(),
+            archive: Some(VecDeque::new()),
+            reread: None,
             learning: Some(Vec::new()),
             game_frame: -1,
             bad_reference: false,
@@ -510,6 +530,7 @@ impl Detector {
             last_eye_snap: None,
             region: None,
             last_flutter_frame: 0,
+            reread_due: false,
         }
     }
 
@@ -624,14 +645,26 @@ impl Detector {
     pub fn push(&mut self, picture: &[u8]) -> (FrameInfo, Vec<Flutter>) {
         self.game_frame += 1;
         let frame: Arc<[u8]> = Arc::from(picture);
+        if let Some(archive) = &mut self.archive {
+            archive.push_back((self.game_frame, frame.clone()));
+            if archive.len() > ARCHIVE_FRAMES {
+                archive.pop_front();
+            }
+        }
         if let Some(learning) = &mut self.learning {
             learning.push((self.game_frame, frame.clone()));
             self.points[self.game_frame as usize % IDLE_LOOP_FRAMES].add(frame);
-            let info = FrameInfo { game_frame: self.game_frame, compared: false, blobs: 0, bad_reference: false };
+            let info = FrameInfo {
+                game_frame: self.game_frame,
+                compared: false,
+                blobs: 0,
+                bad_reference: false,
+                finished_learning: false,
+            };
             if self.points.iter().any(|point| point.frames.len() < REFERENCE_MIN) {
                 return (info, Vec::new());
             }
-            return (info, self.read_learned());
+            return (FrameInfo { finished_learning: true, ..info }, self.read_learned());
         }
         let (compared, flutter) = self.read(picture);
         let blobs = self.centers.len();
@@ -646,8 +679,54 @@ impl Detector {
             let oldest = self.pending.pop_front().expect("checked the length");
             self.points[oldest.game_frame as usize % IDLE_LOOP_FRAMES].add(oldest.frame);
         }
-        let info = FrameInfo { game_frame: self.game_frame, compared, blobs, bad_reference: self.bad_reference };
+        if std::mem::take(&mut self.reread_due) {
+            self.read_archive();
+        }
+        let info = FrameInfo {
+            game_frame: self.game_frame,
+            compared,
+            blobs,
+            bad_reference: self.bad_reference,
+            finished_learning: false,
+        };
         (info, flutter.into_iter().collect())
+    }
+
+    /// A redone first read, once there is one. It's only there once.
+    pub fn take_reread(&mut self) -> Option<Reread> {
+        self.reread.take()
+    }
+
+    /// Reads the kept frames again, now that the eye's region and better references are known. This
+    /// changes nothing else: the tracks in progress and what's known about the eye stay as they are.
+    fn read_archive(&mut self) {
+        let Some(archive) = self.archive.take() else { return };
+        let latest = self.game_frame;
+        let tracks = std::mem::take(&mut self.tracks);
+        let eye = std::mem::take(&mut self.eye);
+        let error = self.last_eye_error;
+        let health = self.health;
+        let last_flutter = self.last_flutter_frame;
+        let busy = self.busy.clone();
+        let through = latest - REREAD_KEEP_FRAMES;
+        let mut flutters = Vec::new();
+        for (game_frame, frame) in archive.iter().filter(|(game_frame, _)| *game_frame <= through) {
+            self.game_frame = *game_frame;
+            self.compare(*game_frame as usize % IDLE_LOOP_FRAMES, frame);
+            flutters.extend(self.track());
+        }
+        // What's still open at the end can't be judged yet
+        self.tracks = tracks;
+        self.eye = eye;
+        self.last_eye_error = error;
+        self.health = health;
+        self.last_flutter_frame = last_flutter;
+        self.busy = busy;
+        self.follow_due = false;
+        self.game_frame = latest;
+        let first = archive.front().map_or(0, |(game_frame, _)| *game_frame);
+        flutters.retain(|flutter| flutter.start >= first);
+        self.reread = Some(Reread { through: through - flutter_len(4) - TRACK_MAX_GAP, flutters });
     }
 
     /// Reads the frames from while the reference was being built, now that it's ready. Frames that
@@ -685,6 +764,9 @@ impl Detector {
         }
         if std::mem::take(&mut self.follow_due) {
             self.follow_eye();
+            if self.region.is_some() {
+                self.reread_due = true;
+            }
         }
         (compared, flutter)
     }
@@ -922,6 +1004,52 @@ mod tests {
         let (flutters, states) = eye_track(777_777, 1500);
         assert!(flutters.len() > 20);
         assert_eq!(after_warmup(&read(&states, false)), after_warmup(&flutters));
+    }
+
+    /// The live log says how many flutters were found looking back, so it has to know which those are.
+    #[test]
+    fn finishing_learning_is_reported_once_with_its_flutters() {
+        let (_, states) = eye_track(777_777, 800);
+        let mut detector = Detector::new();
+        let mut finished = Vec::new();
+        for (frame, &state) in states.iter().enumerate() {
+            let (info, flutters) = detector.push(&scene(frame as i64, state, false));
+            if info.finished_learning {
+                finished.push(flutters.len());
+            } else if frame < IDLE_LOOP_FRAMES * REFERENCE_MIN - 1 {
+                assert_eq!(flutters, [], "nothing can be read before the reference exists");
+            }
+        }
+        assert_eq!(finished.len(), 1);
+        assert!(finished[0] >= 2, "{finished:?}");
+    }
+
+    /// The whole point of reading again: something that read as a flutter early on, far from where
+    /// the eye turned out to be, doesn't survive it, and the real ones do.
+    #[test]
+    fn reading_again_drops_early_strays_and_keeps_real_flutters() {
+        let (flutters, states) = eye_track(777_777, 1600);
+        let mut detector = Detector::new();
+        let mut reread = None;
+        for (frame, &state) in states.iter().enumerate() {
+            let mut picture = scene(frame as i64, state, false);
+            let phase = (frame + 70) % 170;
+            if phase < 8 && phase % 3 != 2 {
+                for row in 390..405 {
+                    picture[row * WIDTH + 520..row * WIDTH + 535].fill(200);
+                }
+            }
+            detector.push(&picture);
+            reread = reread.or(detector.take_reread());
+        }
+        let reread = reread.expect("it never read again");
+        let read: Vec<_> = reread.flutters.iter().map(|f| (f.start, f.count)).collect();
+        let real: Vec<_> = flutters.iter().copied().filter(|f| f.0 <= reread.through).collect();
+        assert!(real.len() >= 2, "the control: {real:?}");
+        let found = real.iter().filter(|f| read.contains(f)).count();
+        assert!(found * 10 >= real.len() * 8, "{found} of {}: {read:?}", real.len());
+        let strays = read.iter().filter(|f| !real.contains(f) && f.0 <= reread.through).count();
+        assert_eq!(strays, 0, "{read:?}");
     }
 
     /// Flutters from before the reference is ready count too, or the read starts seconds late.

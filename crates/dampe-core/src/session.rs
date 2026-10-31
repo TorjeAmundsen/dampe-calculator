@@ -4,14 +4,17 @@
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use crate::detector::{Cadence, Detector, Flutter, Health, Rect};
+use crate::navi::NaviWatch;
 use crate::picture::{GameArea, HEIGHT, Luma, Normalizer, WIDTH};
 use crate::rng::{BOX_GONE_TO_ROLL, StateWalk, rolls_heart_piece};
 use crate::solver::{Candidate, Observation};
 use crate::textbox::{Change, FRAMES_TO_CLOSE, TextboxWatch};
-use crate::tracker::{Status, Tracker, Window};
+use crate::tracker::{LIKELY_MIN_CONFIDENCE, Status, Tracker, Window};
 
 /// Game frames between now and the earliest cue, so the countdown can be followed.
 const CUE_LEAD_FRAMES: i64 = 100;
+/// The same for a likely cue. Its point is being early, so it's shorter: just its countdown.
+const LIKELY_LEAD_FRAMES: i64 = 70;
 /// The shortest window worth pressing for: about a human's spread, plus the clock's.
 const MIN_WINDOW_FRAMES: i64 = 13;
 /// Game frames for the clock's line through arrival times.
@@ -65,6 +68,17 @@ impl GameClock {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     Flutter(Flutter),
+    /// The early frames were read again knowing where the eye is, up to `through`.
+    ReadAgain {
+        through: i64,
+        flutters: usize,
+    },
+    /// The reference is ready, after this many seconds of the box, and this many flutters from
+    /// before that were found looking back. They follow as usual.
+    FoundLookingBack {
+        flutters: usize,
+        seconds: f64,
+    },
     Status(Status),
     /// Game frames were counted as skipped, from a gap of this many seconds.
     Skipped {
@@ -78,6 +92,24 @@ pub enum Event {
         box_frame: i64,
         seconds: f64,
         window: Window,
+    },
+    /// Probably press A so the text box leaves on `box_frame`: no state is proven yet.
+    LikelyCue {
+        box_frame: i64,
+        seconds: f64,
+        window: Window,
+        chance: f64,
+    },
+    /// The chance of the running likely cue changed.
+    LikelyChance {
+        chance: f64,
+    },
+    /// A likely cue isn't likely any more.
+    LikelyCancelled,
+    /// Navi looks done: flutters from `from` on count, and `held` of those came while waiting.
+    NaviDone {
+        from: i64,
+        held: usize,
     },
     /// A cue isn't valid any more: the video contradicted it.
     CueCancelled,
@@ -93,16 +125,26 @@ struct Update {
     status: Status,
     candidates: Vec<Candidate>,
     window: Option<Window>,
+    likely: Option<(Window, f64)>,
 }
 
 enum Work {
     Observe(Observation, bool, i64),
+    Replace(i64, Vec<(Observation, bool)>, i64),
     Reset,
 }
+
+/// A likely window this close to now has gone by, for deciding what to show next.
+const COUNTDOWN_MIN_FRAMES: i64 = 20;
+/// How far from a likely window's target the frames have to stay likely, for it to stay.
+const LIKELY_TARGET_FRAMES: i64 = 4;
+/// A chance this high is every reading agreeing.
+const CERTAIN: f64 = 0.999;
 
 /// Searches can take seconds, and video doesn't wait.
 fn tracker_thread(work: Receiver<Work>, updates: Sender<Update>) {
     let mut tracker = Tracker::new();
+    let mut likely: Option<Window> = None;
     while let Ok(job) = work.recv() {
         let mut now = None;
         let mut jobs = vec![job];
@@ -112,7 +154,12 @@ fn tracker_thread(work: Receiver<Work>, updates: Sender<Update>) {
             match job {
                 Work::Reset => {
                     tracker.reset();
+                    likely = None;
                     now = None;
+                }
+                Work::Replace(through, flutters, at) => {
+                    tracker.replace_through(through, &flutters, at);
+                    now = Some(at);
                 }
                 Work::Observe(observation, clean, at) => {
                     tracker.add(observation, clean);
@@ -123,8 +170,36 @@ fn tracker_thread(work: Receiver<Work>, updates: Sender<Update>) {
         let Some(now) = now else { continue };
         tracker.update(now);
         let locked = tracker.is_locked();
-        let window = locked.then(|| tracker.next_window(now + CUE_LEAD_FRAMES, MIN_WINDOW_FRAMES)).flatten();
-        let update = Update { status: tracker.status(), candidates: tracker.candidates().to_vec(), window };
+        let upcoming = |window: &Window| window.box_gone().0 > now + COUNTDOWN_MIN_FRAMES;
+        // A likely window stays until it's passed or disproven, also once a state is locked: the
+        // certain window can be much later. If it turns out certain, it simply becomes the cue.
+        // The frames around its target are what matter: edges coming and going shouldn't move a countdown
+        likely = likely.filter(|window| {
+            let target = (window.first_roll + window.last_roll) / 2;
+            let around = Window { first_roll: target - LIKELY_TARGET_FRAMES, last_roll: target + LIKELY_TARGET_FRAMES };
+            upcoming(window) && tracker.window_confidence(around) >= LIKELY_MIN_CONFIDENCE
+        });
+        let proven = likely.filter(|&window| locked && tracker.window_confidence(window) >= CERTAIN);
+        if proven.is_some() {
+            likely = None;
+        }
+        let window = proven.or_else(|| {
+            (locked && likely.is_none())
+                .then(|| tracker.next_window(now + CUE_LEAD_FRAMES, MIN_WINDOW_FRAMES))
+                .flatten()
+        });
+        let mut likely_update = likely.map(|window| (window, tracker.chance_at(window.target())));
+        if likely.is_none() && window.is_none() {
+            let found = tracker.likely_window(now + LIKELY_LEAD_FRAMES, MIN_WINDOW_FRAMES, LIKELY_MIN_CONFIDENCE);
+            likely = found.map(|found| found.window);
+            likely_update = found.map(|found| (found.window, found.chance));
+        }
+        let update = Update {
+            status: tracker.status(),
+            candidates: tracker.candidates().to_vec(),
+            window,
+            likely: likely_update,
+        };
         if updates.send(update).is_err() {
             return;
         }
@@ -142,6 +217,7 @@ pub struct Session {
     /// Whether to wait for the Yes/No box, which takes color. Recordings without it read everything.
     needs_box: bool,
     game_frame: i64,
+    navi: NaviWatch,
     frames_seen: u64,
     last_new_frame: Option<f64>,
     work: Sender<Work>,
@@ -149,12 +225,17 @@ pub struct Session {
     status: Status,
     candidates: Vec<Candidate>,
     cue: Option<Window>,
+    likely_cue: Option<Window>,
     /// Wait for each search instead of continuing, so a replay isn't ahead of its own searches.
     wait_for_searches: bool,
 }
 
 impl Session {
     pub fn new(wait_for_searches: bool, needs_box: bool) -> Self {
+        let mut navi = NaviWatch::default();
+        if !needs_box {
+            navi.box_opened();
+        }
         let (work, work_receiver) = channel();
         let (update_sender, updates) = channel();
         std::thread::Builder::new()
@@ -170,6 +251,7 @@ impl Session {
             textbox: TextboxWatch::default(),
             needs_box,
             game_frame: -1,
+            navi,
             frames_seen: 0,
             last_new_frame: None,
             work,
@@ -177,6 +259,7 @@ impl Session {
             status: Status::Collecting(0),
             candidates: Vec::new(),
             cue: None,
+            likely_cue: None,
             wait_for_searches,
         }
     }
@@ -208,6 +291,18 @@ impl Session {
         self.detector.take_health()
     }
 
+    /// Navi has gone: draws from her sparkles broke the blink model until now, so only flutters from
+    /// here on count. What the box learned about the picture stays.
+    pub fn navi_gone(&mut self) {
+        let _ = self.work.send(Work::Reset);
+        while self.updates.try_recv().is_ok() {}
+        self.navi.mark_gone(self.game_frame + 1);
+        self.status = Status::Collecting(0);
+        self.candidates.clear();
+        self.cue = None;
+        self.likely_cue = None;
+    }
+
     /// Starts over: new talk, new camera angle.
     pub fn restart(&mut self) {
         let _ = self.work.send(Work::Reset);
@@ -217,7 +312,9 @@ impl Session {
         self.status = Status::Collecting(0);
         self.candidates.clear();
         self.cue = None;
+        self.likely_cue = None;
         self.game_frame = -1;
+        self.navi.end_read();
         self.last_new_frame = None;
         self.clock = GameClock::default();
     }
@@ -230,7 +327,9 @@ impl Session {
         self.status = Status::Collecting(0);
         self.candidates.clear();
         self.cue = None;
+        self.likely_cue = None;
         self.game_frame = -1;
+        self.navi.end_read();
         self.last_new_frame = None;
         self.clock = GameClock::default();
     }
@@ -243,12 +342,14 @@ impl Session {
             return;
         }
         self.frames_seen += 1;
+        self.navi.frame(&self.picture);
         if self.needs_box
             && let Some(area) = self.normalizer.game_area()
         {
             match self.textbox.observe(frame, chroma, area) {
                 Some(Change::Opened) => {
                     self.start_read();
+                    self.navi.box_opened();
                     events.push(Event::BoxOpened);
                 }
                 Some(Change::Closed) => {
@@ -278,15 +379,30 @@ impl Session {
         self.game_frame += 1;
         self.clock.add(self.game_frame, seconds);
 
-        let (_, flutters) = self.detector.push(&self.picture);
+        let (info, flutters) = self.detector.push(&self.picture);
+        if let Some(reread) = self.detector.take_reread()
+            && let Some(counted) = self.navi.admit_reread(reread.through, &reread.flutters)
+        {
+            events.push(Event::ReadAgain { through: reread.through, flutters: counted.len() });
+            let observations =
+                counted.iter().map(|f| (Observation { start: f.start, count: f.count }, f.is_clean())).collect();
+            let _ = self.work.send(Work::Replace(reread.through, observations, self.game_frame));
+            self.wait_for_update(events);
+        }
+        if info.finished_learning {
+            let seconds = seconds - self.clock.seconds_at(0);
+            events.push(Event::FoundLookingBack { flutters: flutters.len(), seconds });
+        }
         for flutter in flutters {
             events.push(Event::Flutter(flutter));
-            let observation = Observation { start: flutter.start, count: flutter.count };
-            let _ = self.work.send(Work::Observe(observation, flutter.is_clean(), self.game_frame));
-            if self.wait_for_searches
-                && let Ok(update) = self.updates.recv()
-            {
-                self.apply(update, events);
+            if let Some(flutter) = self.navi.admit(flutter) {
+                self.observe(flutter, events);
+            }
+        }
+        if let Some((from, held)) = self.navi.advance(self.game_frame) {
+            events.push(Event::NaviDone { from, held: held.len() });
+            for flutter in held {
+                self.observe(flutter, events);
             }
         }
         if let Some(window) = self.cue
@@ -294,6 +410,20 @@ impl Session {
         {
             // That one went by: the next read of the tracker brings another
             self.cue = None;
+        }
+    }
+
+    fn observe(&mut self, flutter: Flutter, events: &mut Vec<Event>) {
+        let observation = Observation { start: flutter.start, count: flutter.count };
+        let _ = self.work.send(Work::Observe(observation, flutter.is_clean(), self.game_frame));
+        self.wait_for_update(events);
+    }
+
+    fn wait_for_update(&mut self, events: &mut Vec<Event>) {
+        if self.wait_for_searches
+            && let Ok(update) = self.updates.recv()
+        {
+            self.apply(update, events);
         }
     }
 
@@ -309,6 +439,25 @@ impl Session {
         }
         self.status = update.status;
         self.candidates = update.candidates;
+        // A certain cue that's running is better than anything likely
+        let update_likely = update.likely.filter(|_| self.cue.is_none());
+        let new_likely = update_likely.map(|(window, _)| window);
+        if self.likely_cue == new_likely
+            && let Some((_, chance)) = update_likely
+        {
+            events.push(Event::LikelyChance { chance });
+        }
+        if self.likely_cue != new_likely {
+            if self.likely_cue.take().is_some() && (new_likely.is_some() || update.window.is_none()) {
+                events.push(Event::LikelyCancelled);
+            }
+            if let Some((window, chance)) = update_likely {
+                let (first, last) = window.box_gone();
+                let box_frame = (first + last) / 2;
+                self.likely_cue = Some(window);
+                events.push(Event::LikelyCue { box_frame, seconds: self.clock.seconds_at(box_frame), window, chance });
+            }
+        }
         if self.status != Status::Locked {
             if self.cue.take().is_some() {
                 events.push(Event::CueCancelled);
