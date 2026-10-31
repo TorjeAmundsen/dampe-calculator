@@ -97,12 +97,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let mut session = false;
     let mut needs_box = true;
     let mut navi_gone_at = None;
+    let mut background = false;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         if arg == "--truth" {
             truth_path = args.next().cloned();
         } else if arg == "--session" {
             session = true;
+        } else if arg == "--background" {
+            background = true;
         } else if arg == "--navi-gone-at" {
             navi_gone_at = args.next().and_then(|frame| frame.parse().ok());
         } else if arg == "--no-box" {
@@ -136,7 +139,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     if !needs_box {
         navi.box_opened();
     }
-    let mut detector = Detector::new();
+    let mut detector = if background { Detector::in_background() } else { Detector::new() };
     let mut tracker = Tracker::new();
     let mut seen = Vec::<(i64, Flutter)>::new();
     let mut score = Score::default();
@@ -297,7 +300,7 @@ fn run_session(pipe: &mut impl Read, width: usize, height: usize, needs_box: boo
         let frame = Luma { data: luma, width, height, stride: width };
         if navi_gone_at == Some(video_frame) {
             println!("video frame {video_frame}: Navi gone");
-            session.navi_gone();
+            session.start_now();
         }
         let seen = session.frames_seen();
         session.push(frame, chroma, video_frame as f64 * 1001.0 / 60000.0, &mut events);

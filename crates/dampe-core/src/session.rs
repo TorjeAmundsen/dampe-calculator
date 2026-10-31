@@ -134,12 +134,15 @@ enum Work {
     Reset,
 }
 
-/// A likely window this close to now has gone by, for deciding what to show next.
-const COUNTDOWN_MIN_FRAMES: i64 = 20;
 /// How far from a likely window's target the frames have to stay likely, for it to stay.
 const LIKELY_TARGET_FRAMES: i64 = 4;
 /// A chance this high is every reading agreeing.
 const CERTAIN: f64 = 0.999;
+
+/// Whether a press can still make a window. A cue that's nearly due is the last one to drop.
+fn still_ahead(window: &Window, now: i64) -> bool {
+    window.box_gone().1 >= now
+}
 
 /// Searches can take seconds, and video doesn't wait.
 fn tracker_thread(work: Receiver<Work>, updates: Sender<Update>) {
@@ -170,14 +173,13 @@ fn tracker_thread(work: Receiver<Work>, updates: Sender<Update>) {
         let Some(now) = now else { continue };
         tracker.update(now);
         let locked = tracker.is_locked();
-        let upcoming = |window: &Window| window.box_gone().0 > now + COUNTDOWN_MIN_FRAMES;
         // A likely window stays until it's passed or disproven, also once a state is locked: the
         // certain window can be much later. If it turns out certain, it simply becomes the cue.
         // The frames around its target are what matter: edges coming and going shouldn't move a countdown
         likely = likely.filter(|window| {
             let target = (window.first_roll + window.last_roll) / 2;
             let around = Window { first_roll: target - LIKELY_TARGET_FRAMES, last_roll: target + LIKELY_TARGET_FRAMES };
-            upcoming(window) && tracker.window_confidence(around) >= LIKELY_MIN_CONFIDENCE
+            still_ahead(window, now) && tracker.window_confidence(around) >= LIKELY_MIN_CONFIDENCE
         });
         let proven = likely.filter(|&window| locked && tracker.window_confidence(window) >= CERTAIN);
         if proven.is_some() {
@@ -214,6 +216,8 @@ pub struct Session {
     clock: GameClock,
     picture: Vec<u8>,
     textbox: TextboxWatch,
+    /// Reading was started by hand, so it doesn't wait for the box, and the box opening changes nothing.
+    started_by_hand: bool,
     /// Whether to wait for the Yes/No box, which takes color. Recordings without it read everything.
     needs_box: bool,
     game_frame: i64,
@@ -245,10 +249,11 @@ impl Session {
         Self {
             normalizer: Normalizer::new(),
             cadence: Cadence::new(),
-            detector: Detector::new(),
+            detector: if wait_for_searches { Detector::new() } else { Detector::in_background() },
             clock: GameClock::default(),
             picture: vec![0; WIDTH * HEIGHT],
             textbox: TextboxWatch::default(),
+            started_by_hand: false,
             needs_box,
             game_frame: -1,
             navi,
@@ -266,6 +271,11 @@ impl Session {
 
     pub fn fps(&self) -> f64 {
         self.clock.fps()
+    }
+
+    /// Replays wait for everything, so they come out the same every time. Live, video doesn't wait.
+    fn new_detector(&self) -> Detector {
+        if self.wait_for_searches { Detector::new() } else { Detector::in_background() }
     }
 
     /// Where the game is in the feed's frames, once that's known.
@@ -291,9 +301,16 @@ impl Session {
         self.detector.take_health()
     }
 
-    /// Navi has gone: draws from her sparkles broke the blink model until now, so only flutters from
-    /// here on count. What the box learned about the picture stays.
-    pub fn navi_gone(&mut self) {
+    /// Someone said flutters count from now: Navi has gone, or she isn't coming at all. Her draws break
+    /// the blink model, so nothing before this counts. It doesn't take the Yes/No box: from some angles
+    /// she never shows up, and his blinks are good during all of his text, once a text box has settled the camera. If the box is up, what it
+    /// learned about the picture stays.
+    pub fn start_now(&mut self) {
+        if self.needs_box && !self.textbox.is_open() {
+            self.started_by_hand = true;
+            self.start_read();
+            return;
+        }
         let _ = self.work.send(Work::Reset);
         while self.updates.try_recv().is_ok() {}
         self.navi.mark_gone(self.game_frame + 1);
@@ -305,10 +322,11 @@ impl Session {
 
     /// Starts over: new talk, new camera angle.
     pub fn restart(&mut self) {
+        self.started_by_hand = false;
         let _ = self.work.send(Work::Reset);
         while self.updates.try_recv().is_ok() {}
         self.cadence = Cadence::new();
-        self.detector = Detector::new();
+        self.detector = self.new_detector();
         self.status = Status::Collecting(0);
         self.candidates.clear();
         self.cue = None;
@@ -323,7 +341,7 @@ impl Session {
     fn start_read(&mut self) {
         let _ = self.work.send(Work::Reset);
         while self.updates.try_recv().is_ok() {}
-        self.detector = Detector::new();
+        self.detector = self.new_detector();
         self.status = Status::Collecting(0);
         self.candidates.clear();
         self.cue = None;
@@ -347,6 +365,7 @@ impl Session {
             && let Some(area) = self.normalizer.game_area()
         {
             match self.textbox.observe(frame, chroma, area) {
+                Some(Change::Opened) if self.started_by_hand => {}
                 Some(Change::Opened) => {
                     self.start_read();
                     self.navi.box_opened();
@@ -358,12 +377,13 @@ impl Session {
                     let heart_piece = (!self.candidates.is_empty()).then(|| self.would_roll_heart_piece(game_frame));
                     let seconds = self.clock.seconds_at(game_frame);
                     events.push(Event::BoxGone { game_frame, seconds, heart_piece });
+                    self.started_by_hand = false;
                     self.start_read();
                     return;
                 }
                 None => {}
             }
-            if !self.textbox.is_open() {
+            if !self.textbox.is_open() && !self.started_by_hand {
                 return;
             }
         }
@@ -448,7 +468,8 @@ impl Session {
             events.push(Event::LikelyChance { chance });
         }
         if self.likely_cue != new_likely {
-            if self.likely_cue.take().is_some() && (new_likely.is_some() || update.window.is_none()) {
+            let doubted = self.likely_cue.is_some_and(|window| still_ahead(&window, self.game_frame));
+            if self.likely_cue.take().is_some() && doubted && (new_likely.is_some() || update.window.is_none()) {
                 events.push(Event::LikelyCancelled);
             }
             if let Some((window, chance)) = update_likely {
@@ -495,6 +516,52 @@ fn skipped_frames(gap_seconds: f64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A different picture every time, with no colors in it, so never a Yes/No box.
+    fn push_frame(session: &mut Session, frame: usize, events: &mut Vec<Event>) {
+        let (width, height) = (640, 480);
+        let mut luma = vec![60u8; width * height];
+        for row in 100..200 {
+            let x = 100 + frame * 3 % 300;
+            luma[row * width + x..row * width + x + 50].fill(180);
+        }
+        let chroma = vec![128u8; width * height / 2];
+        let picture = Luma { data: &luma, width, height, stride: width };
+        session.push(picture, &chroma, frame as f64 / 20.0, events);
+    }
+
+    /// From some angles Navi never shows up, and his blinks count during all of his text.
+    #[test]
+    fn starting_by_hand_does_not_wait_for_the_box() {
+        let mut session = Session::new(true, true);
+        let mut events = Vec::new();
+        for frame in 0..60 {
+            push_frame(&mut session, frame, &mut events);
+        }
+        assert_eq!(session.game_frame, -1, "the control: no box, so nothing is read");
+        session.start_now();
+        for frame in 60..70 {
+            push_frame(&mut session, frame, &mut events);
+        }
+        assert_eq!(session.game_frame, 9);
+        session.restart();
+        for frame in 70..80 {
+            push_frame(&mut session, frame, &mut events);
+        }
+        assert_eq!(session.game_frame, -1, "starting over waits for the box again");
+    }
+
+    /// Its first frame being close is when a cue matters most. Dropping it then cancelled good cues
+    /// in their last second.
+    #[test]
+    fn a_likely_window_stays_until_its_last_frame_has_gone() {
+        let window = Window { first_roll: 200 + BOX_GONE_TO_ROLL, last_roll: 240 + BOX_GONE_TO_ROLL };
+        assert!(still_ahead(&window, 150));
+        assert!(still_ahead(&window, 199), "just before its first frame");
+        assert!(still_ahead(&window, 220), "inside it");
+        assert!(still_ahead(&window, 240), "on its last frame");
+        assert!(!still_ahead(&window, 241));
+    }
 
     #[test]
     fn clock_follows_the_measured_rate_not_the_default() {

@@ -14,6 +14,7 @@ use dampe_core::tracker::Status;
 use crate::capture::{Capture, list_devices};
 use crate::gui::{self, Gui, Tone};
 use crate::hotkey;
+use crate::logfile;
 use crate::sound::{self, Sound};
 use crate::timing::{Platform, Timing};
 
@@ -40,7 +41,7 @@ impl Log {
     fn line(&self, text: impl std::fmt::Display) {
         let elapsed = self.started.elapsed().as_secs_f64();
         let line = format!("[{:02}:{:04.1}] {text}", (elapsed / 60.0) as u64, elapsed % 60.0);
-        println!("{line}");
+        logfile::line(&line);
         if let Some(gui) = &self.gui {
             gui.add_log(line);
         }
@@ -77,6 +78,7 @@ fn describe(status: &Status) -> String {
 }
 
 pub fn run(args: &[String]) -> Result<(), String> {
+    logfile::start();
     let mut device = DEFAULT_DEVICE.to_owned();
     let timing = Arc::new(Timing::load());
     let mut window = true;
@@ -107,19 +109,23 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
     let capture = Capture::open(&device, true).map_err(|e| format!("couldn't open '{device}': {e}"))?;
     let description = format!("{device}: {}x{}", capture.size.0, capture.size.1);
-    println!("{description}");
-    println!("Open the Yes/No box, wait for Navi to settle, then don't touch anything until the cue.");
-    println!("Press Enter here or Start over in the window after a new talk, or a new camera angle.");
+    logfile::line(&description);
+    logfile::line("Open the Yes/No box, wait for Navi to settle, then don't touch anything until the cue.");
+    if cfg!(not(feature = "windowed")) {
+        logfile::line("Press Enter here or Start over in the window after a new talk, or a new camera angle.");
+    }
 
     let key = hotkey::parse_key(&navi_key).ok_or("--navi-key needs a function key, F1 to F24")?;
     let navi_gone = Arc::new(AtomicBool::new(false));
     let failed_key = navi_key.clone();
     hotkey::listen(key, navi_gone.clone(), move || {
-        println!("Couldn't use {failed_key} as the Navi key: another program has it. Try --navi-key.");
+        let error = format!("Couldn't use {failed_key} as the Navi key: another program has it. Try --navi-key.");
+        logfile::line(&error);
+        crate::show_error(&error);
     });
-    println!(
-        "If the box opened right away because you've talked to Dampe before, it waits for Navi by itself. {navi_key} says she's done, if it's wrong."
-    );
+    logfile::line(format_args!(
+        "If the box opened right away because you've talked to Dampe before, it waits for Navi by itself. {navi_key} starts reading right now, if you know Navi is done or isn't coming."
+    ));
     let sound = Arc::new(Sound::load());
     if !window {
         // Without a window, sound is the only cue there is
@@ -133,7 +139,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let window_navi_gone = navi_gone.clone();
     gui::run(description, window_sound, window_timing, window_navi_gone, navi_key, move |gui, start_over| {
         if let Err(error) = read(capture, &device, timing, Some(gui), start_over, navi_gone, sound) {
-            eprintln!("{error}");
+            logfile::to_file(&error);
+            if !crate::show_error(&error) {
+                eprintln!("{error}");
+            }
             let _ = slint::quit_event_loop();
         }
     })
@@ -150,13 +159,16 @@ fn read(
     sound: Arc<Sound>,
 ) -> Result<(), String> {
     let (restart_sender, restart) = channel();
-    std::thread::spawn(move || {
-        for _ in std::io::stdin().lock().lines() {
-            if restart_sender.send(()).is_err() {
-                return;
+    // Without a console of its own, the terminal's input belongs to the shell it was started from
+    if cfg!(not(feature = "windowed")) {
+        std::thread::spawn(move || {
+            for _ in std::io::stdin().lock().lines() {
+                if restart_sender.send(()).is_err() {
+                    return;
+                }
             }
-        }
-    });
+        });
+    }
 
     let started = Instant::now();
     let log = Log { started, gui: gui.clone() };
@@ -196,14 +208,14 @@ fn read(
             }
             cue_at = None;
             flutters = 0;
-            session.navi_gone();
+            session.start_now();
             if let Some(gui) = &gui {
                 gui.set_cue(None);
                 gui.set_likely(None);
                 gui.set_latest(String::new());
-                gui.set_status("Navi gone: counting flutters from now".to_owned(), Tone::Reading);
+                gui.set_status("Reading flutters from now".to_owned(), Tone::Reading);
             }
-            log.line("Navi gone: only flutters from now on count.");
+            log.line("Started by hand: only flutters from now on count.");
         }
         let frame = match capture.frames.recv_timeout(Duration::from_millis(250)) {
             Ok(frame) => frame,

@@ -8,6 +8,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 use crate::eye::EyeCurve;
 use crate::picture::{HEIGHT, Luma, WIDTH};
@@ -461,6 +462,12 @@ impl Track {
     }
 }
 
+/// What came back from reading stored frames.
+enum Done {
+    Learned(Box<Detector>, Vec<(i64, Arc<[u8]>)>, Vec<Flutter>),
+    Reread(Reread),
+}
+
 struct Pending {
     game_frame: i64,
     frame: Arc<[u8]>,
@@ -475,6 +482,12 @@ pub struct Detector {
     blobs: BlobFinder,
     centers: Vec<Blob>,
     tracks: Vec<Track>,
+    /// Whether reading stored frames happens on another thread, so video doesn't wait for it.
+    in_background: bool,
+    /// Stored frames being read on another thread.
+    working: Vec<Receiver<Done>>,
+    /// Stored frames that have been read.
+    done: Vec<Done>,
     /// The frames so far, until the eye's region is known and they've been read again with it.
     archive: Option<VecDeque<(i64, Arc<[u8]>)>>,
     reread: Option<Reread>,
@@ -517,6 +530,9 @@ impl Detector {
             blobs: BlobFinder::new(),
             centers: Vec::new(),
             tracks: Vec::new(),
+            in_background: false,
+            working: Vec::new(),
+            done: Vec::new(),
             archive: Some(VecDeque::new()),
             reread: None,
             learning: Some(Vec::new()),
@@ -532,6 +548,100 @@ impl Detector {
             last_flutter_frame: 0,
             reread_due: false,
         }
+    }
+
+    /// The same, reading stored frames on another thread. Their results come a little later, and
+    /// video doesn't stop for them.
+    pub fn in_background() -> Self {
+        Self { in_background: true, ..Self::new() }
+    }
+
+    /// A detector with what's needed to read stored frames on its own: the references and what's
+    /// known about where to look.
+    fn reader(&self) -> Self {
+        let mut reader = Self::new();
+        reader.learning = None;
+        reader.archive = None;
+        for (ours, theirs) in reader.points.iter_mut().zip(&self.points) {
+            ours.frames.clone_from(&theirs.frames);
+        }
+        reader.busy.clone_from(&self.busy);
+        reader.region = self.region;
+        reader.game_frame = self.game_frame;
+        reader
+    }
+
+    fn run(&mut self, work: impl FnOnce() -> Done + Send + 'static) {
+        if !self.in_background {
+            self.done.push(work());
+            return;
+        }
+        let (sender, receiver) = channel();
+        let started = std::thread::Builder::new().name("read stored frames".into()).spawn(move || {
+            let _ = sender.send(work());
+        });
+        if started.is_ok() {
+            self.working.push(receiver);
+        }
+    }
+
+    /// Brings in what's been read: the flutters from while the reference was built, if that's what
+    /// came, and whether that was it.
+    fn collect(&mut self) -> (Vec<Flutter>, bool) {
+        let done = std::mem::take(&mut self.done);
+        let mut finished: Vec<Done> = done;
+        self.working.retain(|receiver| match receiver.try_recv() {
+            Ok(done) => {
+                finished.push(done);
+                false
+            }
+            Err(TryRecvError::Empty) => true,
+            Err(TryRecvError::Disconnected) => false,
+        });
+        let mut flutters = Vec::new();
+        let mut learned = false;
+        for done in finished {
+            match done {
+                Done::Reread(reread) => self.reread = Some(reread),
+                Done::Learned(reader, frames, read) => {
+                    learned = true;
+                    self.use_learned(*reader, &frames, &read);
+                    flutters = read;
+                }
+            }
+        }
+        (flutters, learned)
+    }
+
+    /// Takes on what reading the frames from while the reference was built found out.
+    fn use_learned(&mut self, reader: Self, frames: &[(i64, Arc<[u8]>)], flutters: &[Flutter]) {
+        // Frames that turn out to be part of a flutter leave the reference
+        for flutter in flutters.iter().filter(|flutter| flutter.is_clean()) {
+            let range = flutter.start..flutter.start + flutter_len(flutter.count);
+            for (game_frame, frame) in frames {
+                if range.contains(game_frame) {
+                    self.points[*game_frame as usize % IDLE_LOOP_FRAMES].remove(frame);
+                }
+            }
+        }
+        self.tracks.extend(reader.tracks);
+        self.health.game_frames += reader.health.game_frames;
+        self.health.bad_reference += reader.health.bad_reference;
+        self.health.with_blobs += reader.health.with_blobs;
+        self.health.rejected_tracks += reader.health.rejected_tracks;
+        // In the background flutters can have come in meanwhile, and they know better
+        if self.eye.samples() == 0 {
+            self.eye = reader.eye;
+            self.eye_followed = reader.eye_followed;
+            self.region = reader.region;
+            self.last_eye_error = reader.last_eye_error;
+            self.last_eye_snap = reader.last_eye_snap;
+            self.reread_due = reader.reread_due;
+        }
+        if !self.in_background {
+            self.busy = reader.busy;
+        }
+        self.last_flutter_frame = self.last_flutter_frame.max(reader.last_flutter_frame);
     }
 
     /// The blobs on the latest frame that could be the eye.
@@ -661,10 +771,11 @@ impl Detector {
                 bad_reference: false,
                 finished_learning: false,
             };
-            if self.points.iter().any(|point| point.frames.len() < REFERENCE_MIN) {
-                return (info, Vec::new());
+            if self.points.iter().all(|point| point.frames.len() >= REFERENCE_MIN) {
+                self.read_learned();
             }
-            return (FrameInfo { finished_learning: true, ..info }, self.read_learned());
+            let (flutters, learned) = self.collect();
+            return (FrameInfo { finished_learning: learned, ..info }, flutters);
         }
         let (compared, flutter) = self.read(picture);
         let blobs = self.centers.len();
@@ -689,7 +800,9 @@ impl Detector {
             bad_reference: self.bad_reference,
             finished_learning: false,
         };
-        (info, flutter.into_iter().collect())
+        let (mut flutters, learned) = self.collect();
+        flutters.extend(flutter);
+        (FrameInfo { finished_learning: learned, ..info }, flutters)
     }
 
     /// A redone first read, once there is one. It's only there once.
@@ -701,54 +814,35 @@ impl Detector {
     /// changes nothing else: the tracks in progress and what's known about the eye stay as they are.
     fn read_archive(&mut self) {
         let Some(archive) = self.archive.take() else { return };
-        let latest = self.game_frame;
-        let tracks = std::mem::take(&mut self.tracks);
-        let eye = std::mem::take(&mut self.eye);
-        let error = self.last_eye_error;
-        let health = self.health;
-        let last_flutter = self.last_flutter_frame;
-        let busy = self.busy.clone();
-        let through = latest - REREAD_KEEP_FRAMES;
-        let mut flutters = Vec::new();
-        for (game_frame, frame) in archive.iter().filter(|(game_frame, _)| *game_frame <= through) {
-            self.game_frame = *game_frame;
-            self.compare(*game_frame as usize % IDLE_LOOP_FRAMES, frame);
-            flutters.extend(self.track());
-        }
-        // What's still open at the end can't be judged yet
-        self.tracks = tracks;
-        self.eye = eye;
-        self.last_eye_error = error;
-        self.health = health;
-        self.last_flutter_frame = last_flutter;
-        self.busy = busy;
-        self.follow_due = false;
-        self.game_frame = latest;
-        let first = archive.front().map_or(0, |(game_frame, _)| *game_frame);
-        flutters.retain(|flutter| flutter.start >= first);
-        self.reread = Some(Reread { through: through - flutter_len(4) - TRACK_MAX_GAP, flutters });
+        let through = self.game_frame - REREAD_KEEP_FRAMES;
+        let mut reader = self.reader();
+        self.run(move || {
+            let mut flutters = Vec::new();
+            for (game_frame, frame) in archive.iter().filter(|(game_frame, _)| *game_frame <= through) {
+                reader.game_frame = *game_frame;
+                reader.compare(*game_frame as usize % IDLE_LOOP_FRAMES, frame);
+                flutters.extend(reader.track());
+            }
+            let first = archive.front().map_or(0, |(game_frame, _)| *game_frame);
+            flutters.retain(|flutter| flutter.start >= first);
+            Done::Reread(Reread { through: through - flutter_len(4) - TRACK_MAX_GAP, flutters })
+        });
     }
 
-    /// Reads the frames from while the reference was being built, now that it's ready. Frames that
-    /// turn out to be part of a flutter leave the reference.
-    fn read_learned(&mut self) -> Vec<Flutter> {
+    /// Reads the frames from while the reference was being built, now that it's ready.
+    fn read_learned(&mut self) {
         let learned = self.learning.take().unwrap_or_default();
         let latest = self.game_frame;
-        let mut flutters = Vec::new();
-        for (game_frame, frame) in &learned {
-            self.game_frame = *game_frame;
-            flutters.extend(self.read(frame).1);
-        }
-        self.game_frame = latest;
-        for flutter in flutters.iter().filter(|flutter| flutter.is_clean()) {
-            let range = flutter.start..flutter.start + flutter_len(flutter.count);
+        let mut reader = self.reader();
+        self.run(move || {
+            let mut flutters = Vec::new();
             for (game_frame, frame) in &learned {
-                if range.contains(game_frame) {
-                    self.points[*game_frame as usize % IDLE_LOOP_FRAMES].remove(frame);
-                }
+                reader.game_frame = *game_frame;
+                flutters.extend(reader.read(frame).1);
             }
-        }
-        flutters
+            reader.game_frame = latest;
+            Done::Learned(Box::new(reader), learned, flutters)
+        });
     }
 
     /// Compares one frame and follows what's on it. Whether it could be compared, and the flutter
@@ -1004,6 +1098,32 @@ mod tests {
         let (flutters, states) = eye_track(777_777, 1500);
         assert!(flutters.len() > 20);
         assert_eq!(after_warmup(&read(&states, false)), after_warmup(&flutters));
+    }
+
+    /// Live, stored frames are read on another thread. It has to find the same flutters, a little later.
+    #[test]
+    fn reading_in_the_background_gets_there_too() {
+        let (flutters, states) = eye_track(777_777, 1500);
+        let mut detector = Detector::in_background();
+        let mut read = Vec::new();
+        let mut finished = 0;
+        let mut reread = None;
+        for (frame, &state) in states.iter().enumerate() {
+            let (info, found) = detector.push(&scene(frame as i64, state, false));
+            read.extend(found.iter().map(|f| (f.start, f.count)));
+            finished += u32::from(info.finished_learning);
+            reread = reread.or(detector.take_reread());
+            // Video comes slowly, compared to this loop
+            std::thread::sleep(std::time::Duration::from_micros(300));
+        }
+        assert_eq!(finished, 1);
+        assert!(reread.is_some(), "it never read again");
+        let ready = (IDLE_LOOP_FRAMES * REFERENCE_MIN) as i64;
+        let early: Vec<_> = flutters.iter().copied().filter(|f| f.0 < ready - 20).collect();
+        assert!(early.len() >= 2, "the control: {early:?}");
+        for flutter in &early {
+            assert!(read.contains(flutter), "{flutter:?} not in {read:?}");
+        }
     }
 
     /// The live log says how many flutters were found looking back, so it has to know which those are.

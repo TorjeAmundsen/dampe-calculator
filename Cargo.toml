@@ -3,10 +3,18 @@ resolver = "3"
 members = ["crates/dampe-core", "crates/dampe"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0-pre.1"
 edition = "2024"
 license = "GPL-3.0-only"
 
 [profile.release]
 lto = "thin"
 debug = 1
+
+# What gets published: smaller and without debug info. The C runtime is linked in by .cargo/config.toml.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+debug = false
+strip = true

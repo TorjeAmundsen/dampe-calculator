@@ -4,12 +4,23 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# The published program: only its window, with no console, and errors in message boxes.
+windowed = []
+
 [dependencies]
 dampe-core = { path = "../dampe-core" }
-slint = { version = "1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-2"] }
+slint = { version = "1.18.1", default-features = false, features = ["std", "backend-winit", "backend-winit-x11", "backend-winit-wayland", "renderer-software", "compat-1-2"] }
 
 [build-dependencies]
 slint-build = "1.18.1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Slint finds fonts with fontconfig. Loaded when the program runs instead of linked, so building
+# for Linux from Windows doesn't need its development files.
+fontique = { version = "0.11.1", default-features = false, features = ["fontconfig-dlopen"] }
+linuxvideo = "0.3.5"
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-core = "0.62"
@@ -22,6 +33,7 @@ windows = { version = "0.62", features = [
     "Win32_Media_MediaFoundation",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    "Win32_System_Console",
     "Win32_System_Ole",
     "Win32_System_Variant",
     "Win32_UI_Input_KeyboardAndMouse",

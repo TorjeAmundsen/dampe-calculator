@@ -746,9 +746,12 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
 name = "dampe"
-version = "0.1.0"
+version = "0.1.0-pre.1"
 dependencies = [
  "dampe-core",
+ "fontique",
+ "libc",
+ "linuxvideo",
  "slint",
  "slint-build",
  "windows",
@@ -757,7 +760,7 @@ dependencies = [
 
 [[package]]
 name = "dampe-core"
-version = "0.1.0"
+version = "0.1.0-pre.1"
 
 [[package]]
 name = "data-url"
@@ -2270,6 +2273,18 @@ name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
+
+[[package]]
+name = "linuxvideo"
+version = "0.3.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb977526a3b06685515cf98e696d65f7ca8cbe34bd5cc0728dfae7a41c33ef99"
+dependencies = [
+ "bitflags 1.3.2",
+ "libc",
+ "log",
+ "uoctl",
+]
 
 [[package]]
 name = "litemap"
@@ -4332,6 +4347,15 @@ name = "unty"
 version = "0.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6d49784317cd0d1ee7ec5c716dd598ec5b4483ea832a2dced265471cc0f690ae"
+
+[[package]]
+name = "uoctl"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82a1984060a018034bd16642b1c25a2178cf211c3930abb0099f01e995b38eeb"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "url"

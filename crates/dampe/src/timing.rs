@@ -109,7 +109,7 @@ impl State {
 }
 
 fn path() -> Option<PathBuf> {
-    Some(PathBuf::from(std::env::var_os("APPDATA")?).join("dampe-rng").join("timing.txt"))
+    Some(crate::config_dir()?.join("timing.txt"))
 }
 
 /// The platform and feed delay, remembered between runs.

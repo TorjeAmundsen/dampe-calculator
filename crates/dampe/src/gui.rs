@@ -5,6 +5,8 @@
 //! While the last picture hasn't been shown yet, new ones are skipped.
 
 use std::cell::Cell;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,6 +17,8 @@ use dampe_core::picture::{GAME_HEIGHT, GAME_WIDTH, GameArea, MARGIN_X, MARGIN_Y}
 use slint::{Color, ComponentHandle, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel, Weak};
 
 use crate::capture::CapturedFrame;
+use crate::hotkey;
+use crate::logfile;
 use crate::sound::{self, Sound};
 use crate::timing::{Platform, Timing};
 
@@ -196,6 +200,22 @@ impl Gui {
 }
 
 /// Opens the window, runs `read` on its own thread, and returns when the window closes.
+/// Shows the log in the file manager.
+#[cfg(windows)]
+fn open_log_folder(path: &std::path::Path) {
+    // Explorer doesn't take the whole argument in quotes, which is what a path with a space would get
+    let select = format!("/select,\"{}\"", path.display());
+    let _ = std::process::Command::new("explorer").raw_arg(select).spawn();
+}
+
+/// Shows the log's folder in the file manager.
+#[cfg(not(windows))]
+fn open_log_folder(path: &std::path::Path) {
+    if let Some(folder) = path.parent() {
+        let _ = std::process::Command::new("xdg-open").arg(folder).spawn();
+    }
+}
+
 pub fn run(
     device: String,
     sound: Arc<Sound>,
@@ -242,8 +262,16 @@ pub fn run(
     let start_over = Arc::new(AtomicBool::new(false));
     let flag = start_over.clone();
     window.on_start_over(move || flag.store(true, Ordering::Relaxed));
+    if !hotkey::AVAILABLE {
+        window.set_navi_key_text(hotkey::window_key(&navi_key).map(String::from).unwrap_or_default().into());
+    }
     window.set_navi_key(navi_key.into());
     window.on_navi_gone(move || navi_gone.store(true, Ordering::Relaxed));
+    window.on_open_log(|| {
+        if let Some(path) = logfile::path() {
+            open_log_folder(&path);
+        }
+    });
 
     let gui = Gui { window: window.as_weak(), picture_pending: Arc::new(AtomicBool::new(false)), cue: Arc::default() };
 

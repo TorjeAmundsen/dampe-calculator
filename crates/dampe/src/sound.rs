@@ -2,9 +2,13 @@
 //! runs. Off by default, because the window's cue is enough.
 
 use std::path::PathBuf;
+#[cfg(not(windows))]
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
+#[cfg(windows)]
 use windows::Win32::Media::Audio::{PlaySoundW, SND_MEMORY, SND_NODEFAULT, SND_SYNC};
+#[cfg(windows)]
 use windows::core::PCWSTR;
 
 const SAMPLE_RATE: u32 = 44100;
@@ -43,13 +47,32 @@ fn tone(frequency: u32, milliseconds: u32, volume: u8) -> Vec<u8> {
 }
 
 /// Plays a tone, returning when it ended.
+#[cfg(windows)]
 pub fn play((frequency, milliseconds): (u32, u32), volume: u8) {
     let wav = tone(frequency, milliseconds, volume);
     let _ = unsafe { PlaySoundW(PCWSTR(wav.as_ptr().cast()), None, SND_MEMORY | SND_SYNC | SND_NODEFAULT) };
 }
 
+/// Plays a tone with whichever player the system has, returning when it ended.
+#[cfg(not(windows))]
+pub fn play((frequency, milliseconds): (u32, u32), volume: u8) {
+    static PLAYS: AtomicU32 = AtomicU32::new(0);
+    let number = PLAYS.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("dampe-tone-{}-{number}.wav", std::process::id()));
+    if std::fs::write(&path, tone(frequency, milliseconds, volume)).is_err() {
+        return;
+    }
+    for player in ["paplay", "pw-play", "aplay"] {
+        let run = std::process::Command::new(player).arg(&path).stderr(std::process::Stdio::null()).status();
+        if run.is_ok_and(|status| status.success()) {
+            break;
+        }
+    }
+    let _ = std::fs::remove_file(path);
+}
+
 fn settings_path() -> Option<PathBuf> {
-    Some(PathBuf::from(std::env::var_os("APPDATA")?).join("dampe-rng").join("settings.txt"))
+    Some(crate::config_dir()?.join("settings.txt"))
 }
 
 fn parse(text: &str) -> (bool, u8) {
