@@ -81,6 +81,8 @@ const ARCHIVE_FRAMES: usize = 600;
 /// as first read.
 const REREAD_KEEP_FRAMES: i64 = 20;
 /// The shown eye box, half its width and height.
+/// The row of the picture where a text box starts, a little above its edge.
+const TEXT_BOX_TOP: usize = 262;
 const EYE_BOX_X: u16 = 10;
 const EYE_BOX_Y: u16 = 7;
 /// How much of a flutter's pattern has to match, including the quiet frames around it.
@@ -512,6 +514,8 @@ pub struct Detector {
     reread_due: bool,
     /// The latest game frame a flutter was recognized on, for giving up on a region.
     last_flutter_frame: i64,
+    /// Whether to ignore the text box's part of the picture, where text keeps changing.
+    ignore_text_box: bool,
 }
 
 impl Default for Detector {
@@ -547,6 +551,7 @@ impl Detector {
             region: None,
             last_flutter_frame: 0,
             reread_due: false,
+            ignore_text_box: false,
         }
     }
 
@@ -554,6 +559,12 @@ impl Detector {
     /// video doesn't stop for them.
     pub fn in_background() -> Self {
         Self { in_background: true, ..Self::new() }
+    }
+
+    /// From now on, ignores the part of the picture where a text box is: its text scrolls and changes,
+    /// and that looks like blinking. His eyes can't be read through it anyway.
+    pub fn ignore_text_box(&mut self) {
+        self.ignore_text_box = true;
     }
 
     /// A detector with what's needed to read stored frames on its own: the references and what's
@@ -568,6 +579,7 @@ impl Detector {
         reader.busy.clone_from(&self.busy);
         reader.region = self.region;
         reader.game_frame = self.game_frame;
+        reader.ignore_text_box = self.ignore_text_box;
         reader
     }
 
@@ -871,13 +883,16 @@ impl Detector {
             self.eye = EyeCurve::default();
             self.eye_followed.fill(None);
         }
-        let Self { points, busy, mask, blobs, centers, bad_reference, region, .. } = self;
+        let Self { points, busy, mask, blobs, centers, bad_reference, region, ignore_text_box, .. } = self;
         centers.clear();
         let Some(reference) = points[point].reference() else { return false };
         for (((out, &pixel), &reference), busy) in mask.iter_mut().zip(picture).zip(reference).zip(busy.iter_mut()) {
             let changed = (i16::from(pixel) - i16::from(reference)).abs() > CHANGE;
             *busy += (f32::from(u8::from(changed)) - *busy) * BUSY_RATE;
             *out = u8::from(changed && *busy < BUSY_SHARE);
+        }
+        if *ignore_text_box {
+            mask[TEXT_BOX_TOP * WIDTH..].fill(0);
         }
         blobs.find(mask, centers);
         if let Some(region) = region {
@@ -1240,6 +1255,37 @@ mod tests {
         for flutter in after_warmup(&flutters) {
             assert!(read.contains(&flutter), "{flutter:?} not read");
         }
+    }
+
+    /// Text scrolling in the box changes just like a blink can. None of it may read as a flutter, and
+    /// his real ones have to keep coming, while it's still learning too.
+    #[test]
+    fn scrolling_text_in_the_box_is_ignored() {
+        let (flutters, states) = eye_track(777_777, 1500);
+        let run = |ignore: bool| {
+            let mut detector = Detector::new();
+            if ignore {
+                detector.ignore_text_box();
+            }
+            let mut read = Vec::new();
+            for (frame, &state) in states.iter().enumerate() {
+                let mut picture = scene(frame as i64, state, false);
+                let phase = frame % 170;
+                if phase < 8 && phase % 3 != 2 {
+                    for row in 340..355 {
+                        picture[row * WIDTH + 300..row * WIDTH + 315].fill(200);
+                    }
+                }
+                let (_, found) = detector.push(&picture);
+                read.extend(found.iter().map(|f| (f.start, f.count)));
+            }
+            read
+        };
+        let strays = |read: &[(i64, u8)]| read.iter().filter(|f| !flutters.contains(f)).count();
+        assert!(strays(&run(false)) > 0, "the control: this does read as flutters when not ignored");
+        let read = run(true);
+        assert_eq!(strays(&read), 0, "{read:?}");
+        assert_eq!(after_warmup(&read), after_warmup(&flutters));
     }
 
     /// With the eye never closing there's nothing to read, even though the head keeps moving.

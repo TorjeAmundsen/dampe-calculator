@@ -2,6 +2,8 @@
 //! for the arrow, all at once. On Wii VC recordings those three only appear together in that box, in
 //! one unbroken run from when it opens to when it closes. Navi is long gone by then, so nothing from
 //! before it is worth keeping, and the end of the run is the frame the dig was chosen on.
+//!
+//! His first text box is seen earlier, by its edge, so a first talk can be read from his first words.
 
 use crate::picture::{GameArea, Luma};
 
@@ -19,6 +21,20 @@ const MIN_SAMPLES: [u32; 3] = [20, 30, 20];
 /// Game frames in a row that decide it, so one odd frame changes nothing.
 pub const FRAMES_TO_OPEN: u32 = 3;
 pub const FRAMES_TO_CLOSE: u32 = 2;
+
+/// Where any text box's top edge is, as fractions of the game's picture: rows just above and below
+/// it, and columns inside its rounded corners. The box darkens what's behind it, so most columns get
+/// darker across the edge, whatever the text says. Nothing else in the graveyard lines up like that.
+const EDGE_ABOVE: (f32, f32) = (0.585, 0.594);
+const EDGE_BELOW: (f32, f32) = (0.602, 0.611);
+const EDGE_LEFT: f32 = 0.106;
+const EDGE_RIGHT: f32 = 0.908;
+const EDGE_COLUMNS: usize = 200;
+const EDGE_ROWS: usize = 4;
+/// How much darker a column has to get to count: by a quarter, and at least a few levels.
+const EDGE_MIN_DROP: u32 = 3;
+/// The share of columns that have to. Measured 0.87 to 0.98 with a box up, under 0.5 without.
+const EDGE_MIN_SHARE: f32 = 0.7;
 
 /// What changed on a game frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,6 +70,57 @@ fn count_colors(frame: Luma<'_>, chroma: &[u8], area: GameArea) -> [u32; 3] {
         }
     }
     counts
+}
+
+/// The share of columns that get darker across where a text box's top edge would be.
+fn edge_share(frame: Luma<'_>, area: GameArea) -> f32 {
+    let band = |(top, bottom): (f32, f32), x: usize| -> u32 {
+        (0..EDGE_ROWS)
+            .map(|row| {
+                let along = top + (bottom - top) * row as f32 / EDGE_ROWS as f32;
+                let y = (area.top + (area.height as f32 * along) as usize).min(frame.height - 1);
+                u32::from(frame.row(y)[x])
+            })
+            .sum()
+    };
+    let darker = (0..EDGE_COLUMNS)
+        .filter(|&column| {
+            let along = EDGE_LEFT + (EDGE_RIGHT - EDGE_LEFT) * column as f32 / EDGE_COLUMNS as f32;
+            let x = (area.left + (area.width as f32 * along) as usize).min(frame.width - 1);
+            let (above, below) = (band(EDGE_ABOVE, x), band(EDGE_BELOW, x));
+            below * 4 < above * 3 && above - below >= EDGE_MIN_DROP * EDGE_ROWS as u32
+        })
+        .count();
+    darker as f32 / EDGE_COLUMNS as f32
+}
+
+/// Follows whether any text box is up, from his first words on.
+#[derive(Default)]
+pub struct TextWatch {
+    open: bool,
+    against: u32,
+}
+
+impl TextWatch {
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// The next game frame.
+    pub fn observe(&mut self, frame: Luma<'_>, area: GameArea) -> Option<Change> {
+        let present = edge_share(frame, area) >= EDGE_MIN_SHARE;
+        if present == self.open {
+            self.against = 0;
+            return None;
+        }
+        self.against += 1;
+        if self.against < if self.open { FRAMES_TO_CLOSE } else { FRAMES_TO_OPEN } {
+            return None;
+        }
+        self.against = 0;
+        self.open = present;
+        Some(if present { Change::Opened } else { Change::Closed })
+    }
 }
 
 /// Follows whether the box is up.
@@ -122,6 +189,55 @@ mod tests {
     fn step(watch: &mut TextboxWatch, colors: &[(u8, u8, u8)]) -> Option<Change> {
         let (luma, chroma) = frame(colors);
         watch.observe(Luma { data: &luma, width: WIDTH, height: HEIGHT, stride: WIDTH }, &chroma, area())
+    }
+
+    /// A frame with what's below the box's top edge darkened, or not.
+    fn dimmed(box_up: bool) -> Vec<u8> {
+        let mut luma = vec![60u8; WIDTH * HEIGHT];
+        if box_up {
+            let top = (HEIGHT as f32 * 0.597) as usize;
+            let left = (WIDTH as f32 * 0.09) as usize;
+            let right = (WIDTH as f32 * 0.92) as usize;
+            for row in top..(HEIGHT as f32 * 0.88) as usize {
+                luma[row * WIDTH + left..row * WIDTH + right].fill(25);
+            }
+        }
+        luma
+    }
+
+    fn step_text(watch: &mut TextWatch, box_up: bool) -> Option<Change> {
+        let luma = dimmed(box_up);
+        watch.observe(Luma { data: &luma, width: WIDTH, height: HEIGHT, stride: WIDTH }, area())
+    }
+
+    #[test]
+    fn any_text_box_is_seen_by_its_edge_without_any_color() {
+        let mut watch = TextWatch::default();
+        assert_eq!(step_text(&mut watch, false), None, "the control: nothing up");
+        assert_eq!(step_text(&mut watch, true), None);
+        assert_eq!(step_text(&mut watch, false), None, "one odd frame opens nothing");
+        for _ in 1..FRAMES_TO_OPEN {
+            assert_eq!(step_text(&mut watch, true), None);
+        }
+        assert_eq!(step_text(&mut watch, true), Some(Change::Opened));
+        assert_eq!(step_text(&mut watch, false), None, "one odd frame closes nothing");
+        assert_eq!(step_text(&mut watch, true), None);
+        assert_eq!(step_text(&mut watch, false), None);
+        assert_eq!(step_text(&mut watch, false), Some(Change::Closed));
+    }
+
+    /// A dark band that only spans part of the width is scenery, like a hill or Link's back.
+    #[test]
+    fn a_dark_patch_is_not_a_text_box() {
+        let mut luma = dimmed(false);
+        for row in (HEIGHT as f32 * 0.597) as usize..HEIGHT {
+            luma[row * WIDTH + 100..row * WIDTH + 300].fill(25);
+        }
+        let mut watch = TextWatch::default();
+        for _ in 0..10 {
+            let frame = Luma { data: &luma, width: WIDTH, height: HEIGHT, stride: WIDTH };
+            assert_eq!(watch.observe(frame, area()), None);
+        }
     }
 
     #[test]

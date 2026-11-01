@@ -10,7 +10,7 @@ i=0
 for a in "G:/Replay Buffer/2026-10-31 13-16-35.mkv|c1|" "G:/Replay Buffer/2026-10-31 13-20-58.mkv|c2|" \
     "recordings/v2.mkv|v2|--no-box" "recordings/v3.mkv|v3|--no-box" "recordings/v6.mkv|v6|" \
     "recordings/headon_jaw.mkv|headon_jaw|" "recordings/partial_jaw.mkv|partial_jaw|" "recordings/clean.mkv|clean|" \
-    "recordings/repeat1.mkv|repeat1|" "recordings/repeat2.mkv|repeat2|"; do
+    "recordings/repeat1.mkv|repeat1|" "recordings/repeat2.mkv|repeat2|" "recordings/noangle2.mkv|noangle2|" "recordings/skybusy.mkv|skybusy|" "recordings/english1.mkv|english1|"; do
   IFS='|' read -r v t f <<< "$a"
   ( "$B" replay "$v" $f --truth "tests/truth/$t.txt" > "$T/$t.txt" 2>&1 ) &
   i=$((i+1))
@@ -23,7 +23,7 @@ T=sys.argv[1]
 tot={}
 print(f"{'recording':12} {'exact':>7} {'miss':>4} {'extra':>5} {'locks':>5} {'wrong':>5} {'frames right':>13} {'first lock':>10}")
 L=W=F=FR=0
-for name in ['c1','c2','v2','v3','v6','headon_jaw','partial_jaw','clean','repeat1','repeat2']:
+for name in ['c1','c2','v2','v3','v6','headon_jaw','partial_jaw','clean','repeat1','repeat2','noangle2','skybusy','english1']:
     text=open(f'{T}/{name}.txt').read()
     m=re.search(r'flutters in truth (\d+): exact (\d+), wrong count (\d+), wrong start (\d+), missed (\d+), extra (\d+)',text)
     l=re.search(r'locks (\d+): state right (\d+), wrong (\d+)',text)

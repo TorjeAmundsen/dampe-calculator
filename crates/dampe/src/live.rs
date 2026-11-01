@@ -110,7 +110,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let capture = Capture::open(&device, true).map_err(|e| format!("couldn't open '{device}': {e}"))?;
     let description = format!("{device}: {}x{}", capture.size.0, capture.size.1);
     logfile::line(&description);
-    logfile::line("Open the Yes/No box, wait for Navi to settle, then don't touch anything until the cue.");
+    logfile::line("Talk to Dampe: it starts reading from his first text box and waits for Navi by itself.");
     if cfg!(not(feature = "windowed")) {
         logfile::line("Press Enter here or Start over in the window after a new talk, or a new camera angle.");
     }
@@ -124,7 +124,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         crate::show_error(&error);
     });
     logfile::line(format_args!(
-        "If the box opened right away because you've talked to Dampe before, it waits for Navi by itself. {navi_key} starts reading right now, if you know Navi is done or isn't coming."
+        "If the box opened right away because you've talked to Dampe before, it waits for Navi by itself. {navi_key} forces a start, and is only for when it doesn't start or doesn't see Navi finish."
     ));
     let sound = Arc::new(Sound::load());
     if !window {
@@ -213,9 +213,18 @@ fn read(
                 gui.set_cue(None);
                 gui.set_likely(None);
                 gui.set_latest(String::new());
-                gui.set_status("Reading flutters from now".to_owned(), Tone::Reading);
+                let status = if session.started_by_hand() {
+                    "Forced start with no text box up: reading whatever is on screen"
+                } else {
+                    "Forced start: counting flutters from now"
+                };
+                gui.set_status(status.to_owned(), Tone::Reading);
             }
-            log.line("Started by hand: only flutters from now on count.");
+            if session.started_by_hand() {
+                log.line("Forced start with no text box up. It reads whatever is on screen until a text box opens.");
+            } else {
+                log.line("Forced start: only flutters from now on count.");
+            }
         }
         let frame = match capture.frames.recv_timeout(Duration::from_millis(250)) {
             Ok(frame) => frame,
@@ -308,6 +317,32 @@ fn read(
                 // Each flutter has its own line, and this count stops rising when old ones age out
                 Event::Skipped { frames, gap } => {
                     log.line(format_args!("Counted {frames} skipped game frames from a {:.0} ms gap.", gap * 1000.0));
+                }
+                Event::NaviSeen => {}
+                Event::TextOpened => {
+                    eye_found = false;
+                    log.line("A text box is up, reading.");
+                    flutters = 0;
+                    last_report = Instant::now();
+                    if let Some(gui) = &gui {
+                        gui.set_status("Reading flutters".to_owned(), Tone::Reading);
+                        gui.set_latest(String::new());
+                    }
+                }
+                Event::TextGone => {
+                    flutters = 0;
+                    log.line("The text ended with no Yes/No box. Waiting for the next text box.");
+                    if let Some(gui) = &gui {
+                        gui.set_cue(None);
+                        gui.set_likely(None);
+                        gui.set_status(
+                            "Talk to Dampe: reading starts by itself at his first text box".to_owned(),
+                            Tone::Reading,
+                        );
+                    }
+                    if let Some(cancel) = countdown.take() {
+                        let _ = cancel.send(());
+                    }
                 }
                 Event::BoxOpened => {
                     eye_found = false;
@@ -403,7 +438,10 @@ fn read(
                     if let Some(gui) = &gui {
                         gui.set_cue(None);
                         gui.set_likely(None);
-                        gui.set_status("Waiting for the Yes/No box".to_owned(), Tone::Reading);
+                        gui.set_status(
+                            "Talk to Dampe: reading starts by itself at his first text box".to_owned(),
+                            Tone::Reading,
+                        );
                     }
                     if let Some(cancel) = countdown.take() {
                         let _ = cancel.send(());
@@ -432,7 +470,7 @@ fn read(
                         None => log.line(format_args!("The box left before a state was found.")),
                     }
                     flutters = 0;
-                    log.line("Waiting for the next Yes/No box.");
+                    log.line("Waiting for the next text box.");
                 }
             }
         }

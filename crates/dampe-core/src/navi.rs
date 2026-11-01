@@ -5,6 +5,10 @@
 //! The picture shows when she's done: the head turning towards Link and Navi flying in make it
 //! differ from the same point of the idle loop, and it stops doing so about 8 game frames before her
 //! last draw. That's been the same on all recordings so far, so a margin covers it.
+//!
+//! Her light shows it more directly: nothing else in the picture is that bright. While it's on, the
+//! picture isn't worth learning from either. Her sparkles outlive it, though, and each draws twice per
+//! game frame for as long as it lives.
 
 use std::collections::VecDeque;
 
@@ -25,11 +29,26 @@ const MARGIN_FRAMES: i64 = 25;
 /// picture busy, and the blink model finds out if it was wrong.
 const GIVE_UP_FRAMES: i64 = 300;
 
+/// The rows that can show her light: below the hearts and above the text box.
+const LIGHT_ROWS: std::ops::Range<usize> = 16..261;
+/// How bright her light is, and how many pixels of it count.
+const LIGHT_LEVEL: u8 = 220;
+const LIGHT_PIXELS: usize = 6;
+
+/// Game frames her last sparkle can draw for after her light goes out. Going back to Link's hat, she
+/// spawns them with a life of 16 (func_80A03CF8), and they update until that's below 0. The 4 recordings
+/// with her end 12 to 15 game frames after the light.
+const SPARKLE_FRAMES: i64 = 17;
+
 /// Follows the picture to see when Navi has finished.
 pub struct NaviWatch {
     recent: VecDeque<Vec<u8>>,
     /// Game frames in a row the picture has repeated the loop.
     settled_for: i64,
+    /// Her light is in the latest picture.
+    light: bool,
+    /// Flutters can't count before this game frame, because of her sparkles.
+    sparkles_until: i64,
     /// Whether a box is open that's waiting for her to finish.
     waiting: bool,
     /// Flutters starting before this game frame don't count.
@@ -43,6 +62,8 @@ impl Default for NaviWatch {
         Self {
             recent: VecDeque::with_capacity(IDLE_LOOP_FRAMES + 1),
             settled_for: 0,
+            light: false,
+            sparkles_until: 0,
             waiting: false,
             from: 0,
             held: Vec::new(),
@@ -53,6 +74,8 @@ impl Default for NaviWatch {
 impl NaviWatch {
     /// The next game frame's picture, whether a box is open or not.
     pub fn frame(&mut self, picture: &[u8]) {
+        let rows = &picture[LIGHT_ROWS.start * WIDTH..LIGHT_ROWS.end * WIDTH];
+        self.light = rows.iter().filter(|&&pixel| pixel > LIGHT_LEVEL).count() >= LIGHT_PIXELS;
         let top = &picture[..ABOVE_BOX];
         if self.recent.len() == IDLE_LOOP_FRAMES {
             let old = self.recent.pop_front().expect("checked the length");
@@ -70,7 +93,9 @@ impl NaviWatch {
     pub fn box_opened(&mut self) -> bool {
         // It takes a whole loop to know a frame repeated it, so a box opening just after she's done
         // has to wait for that, and looks back when it knows
-        self.waiting = self.settled_for < SETTLED_FRAMES;
+        self.waiting = self.settled_for < SETTLED_FRAMES || self.light;
+        // A read that starts on her light has game frame 0 right after it, which may be the last
+        self.sparkles_until = if self.light { SPARKLE_FRAMES } else { 0 };
         self.from = 0;
         self.held.clear();
         !self.waiting
@@ -118,6 +143,11 @@ impl NaviWatch {
         self.mark_gone(0);
     }
 
+    /// Her light is showing while waiting for her, so what's been read so far is worth nothing.
+    pub fn light_while_waiting(&self) -> bool {
+        self.waiting && self.light
+    }
+
     pub fn is_waiting(&self) -> bool {
         self.waiting
     }
@@ -132,7 +162,7 @@ impl NaviWatch {
             self.waiting = false;
             // The first frame of the run is compared to the frame a whole loop before it
             let settled = now - self.settled_for + 1 - IDLE_LOOP_FRAMES as i64;
-            return Some((settled + MARGIN_FRAMES).max(0));
+            return Some((settled + MARGIN_FRAMES).max(self.sparkles_until));
         }
         if now >= GIVE_UP_FRAMES {
             self.waiting = false;
@@ -228,6 +258,40 @@ mod tests {
         assert_eq!(held, [flutter(100)]);
         assert_eq!(watch.admit(flutter(from - 1)), None, "the control: not waiting, and it's still too early");
         assert_eq!(watch.admit(flutter(from)), Some(flutter(from)));
+    }
+
+    /// A picture can repeat the loop with her still in it, if she's hovering.
+    #[test]
+    fn her_light_means_she_is_not_done_however_settled_it_looks() {
+        let lit = |frame| {
+            let mut picture = looping(frame);
+            picture[100 * WIDTH + 300..100 * WIDTH + 310].fill(240);
+            picture
+        };
+        let mut watch = settled_watch();
+        assert!(!watch.light_while_waiting(), "the control: not waiting, no light");
+        for frame in 200..260 {
+            watch.frame(&lit(frame));
+        }
+        assert!(!watch.box_opened());
+        assert!(watch.light_while_waiting());
+        watch.frame(&looping(260));
+        assert!(!watch.light_while_waiting(), "it's gone");
+    }
+
+    /// However settled the picture is, her sparkles keep drawing after her light is out.
+    #[test]
+    fn flutters_wait_for_her_sparkles_after_her_light() {
+        let mut watch = settled_watch();
+        let mut lit = looping(200);
+        lit[100 * WIDTH + 300..100 * WIDTH + 310].fill(240);
+        watch.frame(&lit);
+        assert!(!watch.box_opened());
+        let mut watch_without = settled_watch();
+        assert!(watch_without.box_opened(), "the control: no light, nothing to wait for");
+        watch.settled_for = SETTLED_FRAMES + 100;
+        watch.frame(&looping(201));
+        assert_eq!(watch.counts_from(0), Some(SPARKLE_FRAMES));
     }
 
     #[test]

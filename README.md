@@ -40,9 +40,8 @@ Before talking to Dampe, make sure of these, since they draw RNG the program can
 
 Then:
 
-1. Talk to him until the Yes/No box is up, with his eyes visible. It starts reading when it sees the box's red, green and
-   blue text.
-2. Stay on the box while it reads. Pressing buttons to get through the text before it is fine.
+1. Talk to him with his eyes visible. It starts reading at his first text box, and counts his blinks once Navi is done.
+2. Go through the text to the Yes/No box whenever you like, and stay on that box until the countdown.
 3. When the countdown starts, press A on Yes as it reaches zero. Anticipate it like a rhythm game rather than reacting.
 
 It takes about 25 seconds to be certain when his eyes are clear, plus the wait for a good moment, which can be anything
@@ -65,16 +64,18 @@ Link and his eyes can't be seen at all, it can't read him, so you'll need a new 
 
 Starting a new talk resets it by itself. Use **Start over** if it seems stuck.
 
-### Navi and starting by hand
+### Navi and Force start
 
-Navi's sparkles draw RNG, so nothing before she's done can count. On a first talk she's done before the Yes/No box. On a
+Navi's sparkles draw RNG, so nothing before she's done can count. It sees her bright light and starts over until it's gone. On a first talk she's done before the Yes/No box. On a
 repeat talk the box opens right away and she comes about 3-4 seconds later, and it waits for her by itself.
 
-Press **F8** or click **Start now** to start reading before the Yes/No box. This is useful on angles where Navi doesn't
-appear at all, since his blinks count during all of his text. Press it once his first text box is up and the camera has
-settled, since it can't read a moving picture. Only blinks from that moment on count, so if Navi is around, wait until
-she's done. F8 works from any program, and only listens to your keyboard. `--navi-key F9` picks another function key. On Linux, F8 only
-works while the window has focus.
+You normally never need **Force start** (**F8**), because reading starts by itself at his first text box. Don't press it
+to get things going, like in a loading zone or while walking up to him: it reads whatever is on screen. A text box opening
+replaces a read forced before it, so that only costs time until then.
+
+Use it with a text box up if it isn't seeing Navi finish, or with no box if it won't start at all. Only blinks from that
+moment on count, so if Navi is around, wait until she's done. F8 works from any program, and only listens to your keyboard.
+On Linux it only works while the window has focus. `--navi-key F9` picks another function key.
 
 ### Timing
 
@@ -98,9 +99,9 @@ The log has what's needed, so please include it. The **Log** button shows the fi
 `dampe.log` in the settings folder, and the run before it is `dampe.previous.log`. Also say your platform, capture setup, and what each dig gave. For
 amber presses, the percentage shown and the result are especially useful. Known limits:
 
-- Only tested on Wii VC with Japanese text so far. N64, English text and analog capture are untested.
+- Tested on Wii VC, mostly with Japanese text. N64 and analog capture are untested.
 - On Linux the sound cue goes through an external player, whose delay isn't measured, so trust the window over the sound.
-- If it stays on "Waiting for the Yes/No box" with the box clearly up, it isn't recognizing the box's colors.
+- If it keeps saying to talk to Dampe with a text box clearly up, it isn't recognizing the box. Force start gets it going.
 
 ## How it works
 

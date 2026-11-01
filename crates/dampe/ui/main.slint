@@ -50,7 +50,7 @@ export component MainWindow inherits Window {
     in property <GameRect> eye;
     in property <bool> has-eye;
     in property <bool> blinking;
-    in property <string> status: "Waiting for the Yes/No box";
+    in property <string> status: "Talk to Dampe: reading starts by itself at his first text box";
     in property <color> status-color: white;
     in property <string> latest;
     in property <string> device;
@@ -294,7 +294,7 @@ export component MainWindow inherits Window {
 
                     Button {
                         horizontal-stretch: 1;
-                        text: "Start now (" + root.navi-key + ")";
+                        text: "Force start (" + root.navi-key + ")";
                         clicked => {
                             root.navi-gone();
                         }
@@ -314,6 +314,13 @@ export component MainWindow inherits Window {
                             root.open-log();
                         }
                     }
+                }
+
+                Text {
+                    text: "Reading starts by itself at Dampe's first text box. Force start is only for when it doesn't.";
+                    color: Colors.secondary;
+                    font-size: 11px;
+                    wrap: word-wrap;
                 }
 
                 Text {

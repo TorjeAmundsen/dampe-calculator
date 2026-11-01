@@ -8,7 +8,7 @@ use crate::navi::NaviWatch;
 use crate::picture::{GameArea, HEIGHT, Luma, Normalizer, WIDTH};
 use crate::rng::{BOX_GONE_TO_ROLL, StateWalk, rolls_heart_piece};
 use crate::solver::{Candidate, Observation};
-use crate::textbox::{Change, FRAMES_TO_CLOSE, TextboxWatch};
+use crate::textbox::{Change, FRAMES_TO_CLOSE, TextWatch, TextboxWatch};
 use crate::tracker::{LIKELY_MIN_CONFIDENCE, Status, Tracker, Window};
 
 /// Game frames between now and the earliest cue, so the countdown can be followed.
@@ -87,6 +87,12 @@ pub enum Event {
     },
     /// The Yes/No box opened: everything starts from here.
     BoxOpened,
+    /// His text started, before any Yes/No box. Reading starts here.
+    TextOpened,
+    /// Her light is showing, so the read started over and begins on the next frame.
+    NaviSeen,
+    /// His text ended with no Yes/No box, so that read is over.
+    TextGone,
     /// Press A so the text box leaves on `box_frame`, which happens at `seconds`.
     Cue {
         box_frame: i64,
@@ -216,6 +222,9 @@ pub struct Session {
     clock: GameClock,
     picture: Vec<u8>,
     textbox: TextboxWatch,
+    text: TextWatch,
+    /// Reading started from a text box, and keeps going when the Yes/No box comes.
+    reading_text: bool,
     /// Reading was started by hand, so it doesn't wait for the box, and the box opening changes nothing.
     started_by_hand: bool,
     /// Whether to wait for the Yes/No box, which takes color. Recordings without it read everything.
@@ -253,6 +262,8 @@ impl Session {
             clock: GameClock::default(),
             picture: vec![0; WIDTH * HEIGHT],
             textbox: TextboxWatch::default(),
+            text: TextWatch::default(),
+            reading_text: false,
             started_by_hand: false,
             needs_box,
             game_frame: -1,
@@ -306,9 +317,10 @@ impl Session {
     /// she never shows up, and his blinks are good during all of his text, once a text box has settled the camera. If the box is up, what it
     /// learned about the picture stays.
     pub fn start_now(&mut self) {
-        if self.needs_box && !self.textbox.is_open() {
+        if self.needs_box && !self.textbox.is_open() && !self.reading_text {
             self.started_by_hand = true;
             self.start_read();
+            self.detector.ignore_text_box();
             return;
         }
         let _ = self.work.send(Work::Reset);
@@ -320,13 +332,22 @@ impl Session {
         self.likely_cue = None;
     }
 
+    /// Reading was forced with no text box up, so it's reading whatever is on screen.
+    pub fn started_by_hand(&self) -> bool {
+        self.started_by_hand
+    }
+
     /// Starts over: new talk, new camera angle.
     pub fn restart(&mut self) {
         self.started_by_hand = false;
+        self.reading_text = self.text.is_open();
         let _ = self.work.send(Work::Reset);
         while self.updates.try_recv().is_ok() {}
         self.cadence = Cadence::new();
         self.detector = self.new_detector();
+        if self.reading_text {
+            self.detector.ignore_text_box();
+        }
         self.status = Status::Collecting(0);
         self.candidates.clear();
         self.cue = None;
@@ -364,8 +385,9 @@ impl Session {
         if self.needs_box
             && let Some(area) = self.normalizer.game_area()
         {
+            let text = self.text.observe(frame, area);
             match self.textbox.observe(frame, chroma, area) {
-                Some(Change::Opened) if self.started_by_hand => {}
+                Some(Change::Opened) if self.started_by_hand || self.reading_text => {}
                 Some(Change::Opened) => {
                     self.start_read();
                     self.navi.box_opened();
@@ -378,12 +400,38 @@ impl Session {
                     let seconds = self.clock.seconds_at(game_frame);
                     events.push(Event::BoxGone { game_frame, seconds, heart_piece });
                     self.started_by_hand = false;
+                    self.reading_text = false;
                     self.start_read();
                     return;
                 }
                 None => {}
             }
-            if !self.textbox.is_open() && !self.started_by_hand {
+            match text {
+                // A real text box replaces a read forced before it: there's a talk to read now, and what
+                // came before it could be anything, like a loading zone or walking up to him
+                Some(Change::Opened) if !self.textbox.is_open() => {
+                    self.started_by_hand = false;
+                    self.reading_text = true;
+                    self.start_read();
+                    self.detector.ignore_text_box();
+                    self.navi.box_opened();
+                    events.push(Event::TextOpened);
+                }
+                Some(Change::Closed) if self.reading_text && !self.textbox.is_open() => {
+                    self.reading_text = false;
+                    self.start_read();
+                    events.push(Event::TextGone);
+                }
+                _ => {}
+            }
+            if !self.textbox.is_open() && !self.started_by_hand && !self.reading_text {
+                return;
+            }
+            // Nothing from while she's here is any use, including as a reference for the picture
+            if self.navi.light_while_waiting() {
+                self.start_read();
+                self.navi.box_opened();
+                events.push(Event::NaviSeen);
                 return;
             }
         }
@@ -528,6 +576,97 @@ mod tests {
         let chroma = vec![128u8; width * height / 2];
         let picture = Luma { data: &luma, width, height, stride: width };
         session.push(picture, &chroma, frame as f64 / 20.0, events);
+    }
+
+    /// The same frame with a text box's darkening over it, and the Yes/No box's colors if asked for.
+    fn push_text(session: &mut Session, frame: usize, yes_no: bool, events: &mut Vec<Event>) {
+        let (width, height) = (640, 480);
+        let mut luma = vec![60u8; width * height];
+        for row in 100..200 {
+            let x = 100 + frame * 3 % 300;
+            luma[row * width + x..row * width + x + 50].fill(180);
+        }
+        for row in 287..422 {
+            luma[row * width + 58..row * width + 590].fill(25);
+        }
+        let mut chroma = vec![128u8; width * height / 2];
+        if yes_no {
+            for (i, (y, u, v)) in [(60u8, 220u8, 110u8), (150, 70, 60), (70, 110, 220)].into_iter().enumerate() {
+                let left = 80 + i * 150;
+                for row in 320..360 {
+                    luma[row * width + left..row * width + left + 100].fill(y);
+                    for x in (left..left + 100).step_by(2) {
+                        chroma[row / 2 * width + x] = u;
+                        chroma[row / 2 * width + x + 1] = v;
+                    }
+                }
+            }
+        }
+        let picture = Luma { data: &luma, width, height, stride: width };
+        session.push(picture, &chroma, frame as f64 / 20.0, events);
+    }
+
+    /// Flutters from his first words on are what this is for, so the Yes/No box must not start over.
+    #[test]
+    fn reading_starts_from_his_first_text_and_goes_on_through_the_yes_no_box() {
+        let mut session = Session::new(true, true);
+        let mut events = Vec::new();
+        for frame in 0..60 {
+            push_frame(&mut session, frame, &mut events);
+        }
+        assert_eq!(session.game_frame, -1, "the control: no box, so nothing is read");
+        for frame in 60..80 {
+            push_text(&mut session, frame, false, &mut events);
+        }
+        assert!(matches!(events.iter().filter(|e| matches!(e, Event::TextOpened)).count(), 1));
+        let before_yes_no = session.game_frame;
+        assert!(before_yes_no >= 15, "{before_yes_no}");
+        for frame in 80..90 {
+            push_text(&mut session, frame, true, &mut events);
+        }
+        assert_eq!(session.game_frame, before_yes_no + 10, "the Yes/No box started it over");
+        assert!(!events.iter().any(|e| matches!(e, Event::BoxOpened)));
+    }
+
+    /// Forcing a start in a loading zone or while walking up to him can't spoil the talk that follows.
+    #[test]
+    fn a_text_box_replaces_a_read_forced_before_it() {
+        let mut session = Session::new(true, true);
+        let mut events = Vec::new();
+        for frame in 0..60 {
+            push_frame(&mut session, frame, &mut events);
+        }
+        session.start_now();
+        for frame in 60..90 {
+            push_frame(&mut session, frame, &mut events);
+        }
+        assert!(session.started_by_hand());
+        assert_eq!(session.game_frame, 29, "the control: forcing it reads with no box up");
+        for frame in 90..100 {
+            push_text(&mut session, frame, false, &mut events);
+        }
+        assert!(!session.started_by_hand());
+        assert!(events.iter().any(|e| matches!(e, Event::TextOpened)));
+        assert!(session.game_frame < 10, "it went on from before the box: {}", session.game_frame);
+    }
+
+    /// Talking to someone else, or leaving, can't leave a read going for the next talk.
+    #[test]
+    fn text_ending_with_no_yes_no_box_ends_the_read() {
+        let mut session = Session::new(true, true);
+        let mut events = Vec::new();
+        for frame in 0..20 {
+            push_frame(&mut session, frame, &mut events);
+        }
+        for frame in 20..40 {
+            push_text(&mut session, frame, false, &mut events);
+        }
+        assert!(session.game_frame > 0, "the control: it was reading");
+        for frame in 40..50 {
+            push_frame(&mut session, frame, &mut events);
+        }
+        assert_eq!(session.game_frame, -1);
+        assert!(events.iter().any(|e| matches!(e, Event::TextGone)));
     }
 
     /// From some angles Navi never shows up, and his blinks count during all of his text.
