@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use dampe_core::detector::Rect;
 use dampe_core::picture::{GAME_HEIGHT, GAME_WIDTH, GameArea, MARGIN_X, MARGIN_Y};
+use dampe_core::tracker::{Reading, Readings};
 use slint::{Color, ComponentHandle, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel, Weak};
 
 use crate::capture::CapturedFrame;
@@ -103,6 +104,47 @@ fn game_rect(rect: Rect) -> GameRect {
     }
 }
 
+/// A chance for reading at a glance, as a percentage.
+fn percent(share: f64) -> String {
+    match share * 100.0 {
+        percent if percent >= 99.95 => ">99.9%".to_owned(),
+        percent if percent > 0.0 && percent < 0.1 => "<0.1%".to_owned(),
+        percent => format!("{percent:.1}%"),
+    }
+}
+
+/// The rows of the list of readings, and what's said over them. `left` is the seconds until a
+/// reading's next Heart Piece.
+fn reading_rows(readings: &Readings, left: impl Fn(&Reading) -> Option<f64>) -> (Vec<ReadingRow>, String) {
+    let rows = readings
+        .top
+        .iter()
+        .enumerate()
+        .map(|(rank, reading)| ReadingRow {
+            rank: rank as i32 + 1,
+            share: reading.share as f32,
+            chance: percent(reading.share).into(),
+            seed: format!("{:06x}", reading.candidate.seed).into(),
+            link: format!("Link {}", reading.candidate.link_first).into(),
+            hits: reading.hits as i32,
+            misses: reading.misses as i32,
+            strays: reading.extras as i32,
+            predicted: reading.confirmed as i32,
+            heart_piece: match left(reading) {
+                Some(seconds) if seconds >= 0.0 => format!("{seconds:.1} s").into(),
+                Some(_) => "passed".into(),
+                None => "over 60 s".into(),
+            },
+        })
+        .collect();
+    let summary = match readings.total {
+        0 => "It takes 6 flutters to start looking".to_owned(),
+        1 => format!("1 candidate. Chance it's not this: {}", percent(readings.not_found)),
+        total => format!("{total} candidates. Chance it's none of them: {}", percent(readings.not_found)),
+    };
+    (rows, summary)
+}
+
 /// Talks to the window from the read's thread.
 #[derive(Clone)]
 pub struct Gui {
@@ -184,6 +226,15 @@ impl Gui {
         });
     }
 
+    /// Shows the most likely readings.
+    pub fn set_readings(&self, readings: &Readings, left: impl Fn(&Reading) -> Option<f64>) {
+        let (rows, summary) = reading_rows(readings, left);
+        self.on_ui(move |window| {
+            window.set_readings(ModelRc::new(VecModel::from(rows)));
+            window.set_readings_summary(summary.into());
+        });
+    }
+
     /// Marks the running countdown as only likely, at this percentage.
     pub fn set_likely(&self, percent: Option<u32>) {
         self.on_ui(move |window| {
@@ -213,6 +264,19 @@ fn open_log_folder(path: &std::path::Path) {
 fn open_log_folder(path: &std::path::Path) {
     if let Some(folder) = path.parent() {
         let _ = std::process::Command::new("xdg-open").arg(folder).spawn();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chances_stay_readable_at_the_extremes() {
+        assert_eq!(percent(0.0), "0.0%");
+        assert_eq!(percent(0.00001), "<0.1%");
+        assert_eq!(percent(0.5), "50.0%");
+        assert_eq!(percent(0.99999), ">99.9%");
     }
 }
 

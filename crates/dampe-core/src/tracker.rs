@@ -100,6 +100,31 @@ impl Window {
     }
 }
 
+/// A reading and how it's doing, for showing how the read works.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Reading {
+    pub candidate: Candidate,
+    /// The chance this is the real one, 0 to 1.
+    pub share: f64,
+    pub hits: u32,
+    pub misses: u32,
+    pub extras: u32,
+    /// Flutters it predicted before they were seen.
+    pub confirmed: u32,
+    /// When a dig next gives the Heart Piece for this reading alone, if that's soon.
+    pub next_window: Option<Window>,
+}
+
+/// The most likely readings.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Readings {
+    pub top: Vec<Reading>,
+    /// How many there are in all.
+    pub total: usize,
+    /// The chance the real one isn't among them at all, 0 to 1.
+    pub not_found: f64,
+}
+
 /// A reading being followed.
 #[derive(Clone, Copy)]
 struct Followed {
@@ -288,9 +313,9 @@ impl Tracker {
         states.all(|state| state == first)
     }
 
-    /// The chance of each frame in `frames` giving the Heart Piece, going by how well each reading
-    /// explains what was seen, and the most hits any reading has.
-    fn chances(&self, frames: std::ops::Range<i64>) -> Option<(Vec<f64>, u32)> {
+    /// Every reading with its chance of being the real one, likeliest first, going by how well it
+    /// explains what was seen, and the chance the real one isn't among them.
+    fn shares(&self) -> Option<(Vec<(f64, &Followed)>, f64)> {
         let mut weighted: Vec<(f64, &Followed)> =
             self.followed.iter().map(|followed| (log_weight(&followed.latest), followed)).collect();
         weighted.sort_by(|a, b| b.0.total_cmp(&a.0));
@@ -300,12 +325,41 @@ impl Tracker {
         let unexplained =
             UNEXPLAINED_HITS * P_READ.ln() + (explained - UNEXPLAINED_HITS).max(0.0) * P_STRAY.ln() - best;
         let total: f64 = weighted.iter().map(|(weight, _)| (weight - best).exp()).sum::<f64>() + unexplained.exp();
-        let mut walks: Vec<_> = weighted
+        for (weight, _) in &mut weighted {
+            *weight = (*weight - best).exp() / total;
+        }
+        Some((weighted, unexplained.exp() / total))
+    }
+
+    /// The `limit` most likely readings as of game frame `now`, where their Heart Piece windows have
+    /// to be at least `min_frames` long.
+    pub fn readings(&self, limit: usize, now: i64, min_frames: i64) -> Readings {
+        let Some((shares, not_found)) = self.shares() else { return Readings::default() };
+        let top = shares
+            .iter()
+            .take(limit)
+            .map(|&(share, followed)| Reading {
+                candidate: followed.candidate,
+                share,
+                hits: followed.latest.hits,
+                misses: followed.latest.misses,
+                extras: followed.latest.extras,
+                confirmed: followed.confirmed,
+                next_window: first_window(&[followed.candidate], now + BOX_GONE_TO_ROLL, min_frames),
+            })
+            .collect();
+        Readings { top, total: shares.len(), not_found }
+    }
+
+    /// The chance of each frame in `frames` giving the Heart Piece, going by how well each reading
+    /// explains what was seen, and the most hits any reading has.
+    fn chances(&self, frames: std::ops::Range<i64>) -> Option<(Vec<f64>, u32)> {
+        let (shares, _) = self.shares()?;
+        let best_hits = shares.first()?.1.latest.hits;
+        let mut walks: Vec<_> = shares
             .iter()
             .take(LIKELY_READINGS)
-            .map(|(weight, followed)| {
-                ((weight - best).exp() / total, StateWalk::new(followed.candidate.blinks()), followed.candidate.offset)
-            })
+            .map(|&(share, followed)| (share, StateWalk::new(followed.candidate.blinks()), followed.candidate.offset))
             .collect();
         let chances = frames
             .map(|frame| {
@@ -319,7 +373,7 @@ impl Tracker {
                     .sum()
             })
             .collect();
-        Some((chances, best_followed.latest.hits))
+        Some((chances, best_hits))
     }
 
     /// The first window from game frame `from` on, at least `min_frames` long, where every frame has
@@ -357,24 +411,30 @@ impl Tracker {
     /// The first time a dig gives the Heart Piece for every reading, from game frame `from` on,
     /// where the window is at least `min_frames` long.
     pub fn next_window(&self, from: i64, min_frames: i64) -> Option<Window> {
-        if self.candidates.is_empty() {
-            return None;
-        }
-        let mut walks: Vec<_> =
-            self.candidates.iter().map(|candidate| (StateWalk::new(candidate.blinks()), candidate.offset)).collect();
-        let mut run_start = None;
-        for frame in from..from + HORIZON {
-            let good = walks.iter_mut().all(|(walk, offset)| rolls_heart_piece(walk.state_for_roll(frame - *offset)));
-            if good {
-                run_start.get_or_insert(frame);
-            } else if let Some(start) = run_start.take()
-                && frame - start >= min_frames
-            {
-                return Some(Window { first_roll: start, last_roll: frame - 1 });
-            }
-        }
-        None
+        first_window(&self.candidates, from, min_frames)
     }
+}
+
+/// The first time a dig gives the Heart Piece for all of `candidates`, from game frame `from` on, where
+/// the window is at least `min_frames` long.
+fn first_window(candidates: &[Candidate], from: i64, min_frames: i64) -> Option<Window> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let mut walks: Vec<_> =
+        candidates.iter().map(|candidate| (StateWalk::new(candidate.blinks()), candidate.offset)).collect();
+    let mut run_start = None;
+    for frame in from..from + HORIZON {
+        let good = walks.iter_mut().all(|(walk, offset)| rolls_heart_piece(walk.state_for_roll(frame - *offset)));
+        if good {
+            run_start.get_or_insert(frame);
+        } else if let Some(start) = run_start.take()
+            && frame - start >= min_frames
+        {
+            return Some(Window { first_roll: start, last_roll: frame - 1 });
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -549,6 +609,30 @@ mod tests {
         let mut tracker = Tracker::new();
         feed(&mut tracker, &all);
         assert_eq!(tracker.likely_window(all[2].start + 100, 13, LIKELY_MIN_CONFIDENCE), None);
+    }
+
+    /// What's shown has to add up, and the real one has to come out on top.
+    #[test]
+    fn readings_are_shares_of_one_with_the_real_one_first() {
+        assert_eq!(Tracker::new().readings(6, 0, 13), Readings::default());
+        let mut tracker = Tracker::new();
+        feed(&mut tracker, &flutters(3_141_592, 40, 16));
+        let readings = tracker.readings(6, 2000, 13);
+        assert!(readings.top.len() <= 6 && readings.total >= readings.top.len());
+        assert_eq!(readings.top[0].candidate.seed, 3_141_592);
+        assert!(readings.top.windows(2).all(|pair| pair[0].share >= pair[1].share));
+        let (shares, not_found) = tracker.shares().expect("it has readings");
+        let total = shares.iter().map(|(share, _)| share).sum::<f64>() + not_found;
+        assert!((total - 1.0).abs() < 1e-9, "{total}");
+        assert!(readings.top[0].hits >= MIN_HITS);
+        // Its own window, which the one that's cued has to fit inside, since that's for every reading
+        let own = readings.top[0].next_window.expect("no window in the horizon");
+        let mut walk = StateWalk::new(readings.top[0].candidate.blinks());
+        for frame in own.first_roll..=own.last_roll {
+            assert!(rolls_heart_piece(walk.state_for_roll(frame - readings.top[0].candidate.offset)));
+        }
+        let cued = tracker.next_window(2000 + BOX_GONE_TO_ROLL, 13).expect("no window in the horizon");
+        assert!(own.first_roll <= cued.first_roll && cued.last_roll <= own.last_roll, "{own:?} {cued:?}");
     }
 
     /// The chance is the share of the readings' weight that gets the Heart Piece on that frame.

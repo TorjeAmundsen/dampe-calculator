@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use dampe_core::picture::Luma;
 use dampe_core::session::{Event, Session};
 use dampe_core::tracker::Status;
+use dampe_core::tracker::{Reading, Readings};
 
 use crate::capture::{Capture, list_devices};
 use crate::gui::{self, Gui, Tone};
@@ -18,6 +19,8 @@ use crate::logfile;
 use crate::sound::{self, Sound};
 use crate::timing::{Platform, Timing};
 
+/// How often the times in the list of readings count down.
+const READINGS_REFRESH: Duration = Duration::from_millis(250);
 const DEFAULT_DEVICE: &str = "OBS Virtual Camera";
 const DEFAULT_NAVI_KEY: &str = "F8";
 /// How far from the countdown's zero the box can leave and still have been following it.
@@ -173,6 +176,8 @@ fn read(
     let started = Instant::now();
     let log = Log { started, gui: gui.clone() };
     let mut session = Session::new(false, true);
+    let mut readings_shown = Readings::default();
+    let mut last_readings = Instant::now();
     let mut shown_frames = 0;
     let mut events = Vec::new();
     let mut countdown: Option<Sender<()>> = None;
@@ -257,6 +262,18 @@ fn read(
         let seconds = frame.arrival.duration_since(started).as_secs_f64();
         let luma = Luma { data: &frame.luma, width: frame.width, height: frame.height, stride: frame.width };
         session.push(luma, &frame.chroma, seconds, &mut events);
+        let new_readings = session.take_readings();
+        let changed = new_readings.is_some();
+        if let Some(readings) = new_readings {
+            readings_shown = readings;
+        }
+        if let Some(gui) = &gui
+            && (changed || (!readings_shown.top.is_empty() && last_readings.elapsed() >= READINGS_REFRESH))
+        {
+            last_readings = Instant::now();
+            let left = |reading: &Reading| reading.next_window.map(|w| session.window_seconds(&w) - seconds);
+            gui.set_readings(&readings_shown, left);
+        }
         if let Some(gui) = &gui
             && session.frames_seen() != shown_frames
         {

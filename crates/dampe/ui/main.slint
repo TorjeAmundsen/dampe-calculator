@@ -1,4 +1,5 @@
-// The window: the feed in color with what the read sees on top, and the state of the read beside it.
+// The window: the readings over the feed in color with what the read sees on top, and the state of
+// the read beside them.
 // Colors are AutoSplit's dark theme.
 
 import { Button, CheckBox, ComboBox, Slider } from "std-widgets.slint";
@@ -11,6 +12,20 @@ export struct GameRect {
     height: float,
 }
 
+// A reading in the list
+export struct ReadingRow {
+    rank: int,
+    share: float,
+    chance: string,
+    seed: string,
+    link: string,
+    hits: int,
+    misses: int,
+    strays: int,
+    predicted: int,
+    heart-piece: string,
+}
+
 global Colors {
     out property <color> reached: #6cd688;
     out property <color> blob: #e0c040;
@@ -20,6 +35,8 @@ global Colors {
     out property <color> frame: #555555;
     out property <color> bar: #3d9bff;
     out property <color> likely: #e0a040;
+    out property <color> card: #272727;
+    out property <color> faint: #6a6a6a;
 }
 
 component Mark inherits Rectangle {
@@ -36,10 +53,177 @@ component Mark inherits Rectangle {
     background: transparent;
 }
 
+// A count with its name, dimmed at zero
+component Tally inherits HorizontalLayout {
+    in property <int> count;
+    in property <string> name;
+    in property <color> tint;
+    spacing: 3px;
+
+    Text {
+        text: root.count;
+        color: root.count == 0 ? Colors.faint : root.tint;
+        font-size: 12px;
+        font-weight: 700;
+        vertical-alignment: center;
+    }
+
+    Text {
+        text: root.name;
+        color: Colors.secondary;
+        font-size: 10px;
+        vertical-alignment: center;
+    }
+}
+
+// One of the predictions a reading needs to be proven
+component ProofDot inherits Rectangle {
+    in property <bool> lit;
+    in property <color> tint;
+    width: 9px;
+    height: 9px;
+    border-radius: 4.5px;
+    border-width: 1px;
+    border-color: self.lit ? self.tint : Colors.faint;
+    background: self.lit ? self.tint : transparent;
+}
+
+// One possible state of the RNG. The bar behind it is its chance of being the real one, and its
+// color says how far it's got: gray searching, blue predicting, green proven
+component ReadingCard inherits Rectangle {
+    in property <ReadingRow> reading;
+    property <color> accent: self.reading.predicted >= 2 ? Colors.reached : self.reading.predicted == 1 ? Colors.bar : Colors.faint;
+    height: 40px;
+    border-radius: 5px;
+    background: Colors.card;
+    clip: true;
+
+    Rectangle {
+        x: 0px;
+        width: parent.width * root.reading.share;
+        background: @linear-gradient(90deg, root.accent.transparentize(0.45), root.accent.transparentize(0.8));
+    }
+
+    Rectangle {
+        x: 0px;
+        width: 3px;
+        background: root.accent;
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 8px;
+        spacing: 8px;
+
+        Text {
+            width: 16px;
+            text: root.reading.rank;
+            color: Colors.secondary;
+            font-size: 11px;
+            vertical-alignment: center;
+        }
+
+        Text {
+            width: 58px;
+            text: root.reading.chance;
+            color: white;
+            font-size: 15px;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            padding-top: 4px;
+            padding-bottom: 4px;
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+
+                Text {
+                    text: root.reading.seed;
+                    color: white;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: root.reading.link;
+                    color: Colors.secondary;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+
+                Tally {
+                    count: root.reading.hits;
+                    name: "hit";
+                    tint: Colors.reached;
+                }
+
+                Tally {
+                    count: root.reading.misses;
+                    name: "miss";
+                    tint: Colors.blinking;
+                }
+
+                Tally {
+                    count: root.reading.strays;
+                    name: "stray";
+                    tint: Colors.blob;
+                }
+            }
+        }
+
+        VerticalLayout {
+            width: 64px;
+            padding-top: 4px;
+            padding-bottom: 4px;
+
+            Text {
+                text: root.reading.heart-piece;
+                color: white;
+                font-size: 12px;
+                font-weight: 700;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+
+            HorizontalLayout {
+                spacing: 3px;
+                alignment: end;
+
+                VerticalLayout {
+                    alignment: center;
+
+                    ProofDot {
+                        lit: root.reading.predicted >= 1;
+                        tint: root.accent;
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: center;
+
+                    ProofDot {
+                        lit: root.reading.predicted >= 2;
+                        tint: root.accent;
+                    }
+                }
+            }
+        }
+    }
+}
+
 export component MainWindow inherits Window {
     title: "Dampe Calculator";
-    preferred-width: 1040px;
-    preferred-height: 700px;
+    preferred-width: 720px;
+    preferred-height: 640px;
     min-width: 640px;
     min-height: 560px;
     background: #1f1f1f;
@@ -69,6 +253,12 @@ export component MainWindow inherits Window {
     in-out property <bool> sound-on;
     in-out property <float> volume: 50;
     in property <[string]> log;
+    in property <[ReadingRow]> readings;
+    in property <string> readings-summary: "It takes 6 flutters to start looking";
+    // Room for the frame's thickest border around the picture
+    property <length> feed-border: 6px;
+    // The list always gets at least this much, for a window that's wide but not tall
+    property <length> least-readings: 170px;
     // The key as the window sees it, where it has to listen itself instead of a global hotkey
     in property <string> navi-key-text;
 
@@ -95,37 +285,92 @@ export component MainWindow inherits Window {
             padding: 10px;
             spacing: 10px;
 
-            feed-frame := Rectangle {
+            // Children placed by hand, so its size comes from the window and never from what's in it
+            left := Rectangle {
                 horizontal-stretch: 1;
-                background: black;
-                border-width: root.press ? 6px : root.pulse ? 3px : 1px;
-                border-color: root.press ? (root.likely ? Colors.likely : Colors.reached) : root.pulse ? white : Colors.frame;
+                min-width: 330px;
 
-                property <length> unit: min(self.width / 720, self.height / 540);
+                // As wide as there's room for at 4:3, with what's left over it for the readings
+                property <length> picture-width: min(self.width - 2 * root.feed-border,
+                    (self.height - root.least-readings - 8px - 2 * root.feed-border) * 4 / 3);
+                property <length> frame-height: self.picture-width * 3 / 4 + 2 * root.feed-border;
 
                 Rectangle {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: parent.height - parent.frame-height - 8px;
+                    clip: true;
+
+                    VerticalLayout {
+                        spacing: 4px;
+                        alignment: start;
+
+                        HorizontalLayout {
+                            height: 18px;
+
+                            Text {
+                                text: "Candidates";
+                                color: white;
+                                font-size: 13px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                horizontal-stretch: 1;
+                                text: root.readings-summary;
+                                color: Colors.secondary;
+                                font-size: 11px;
+                                overflow: elide;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        // Only cards that fit whole: the heading, then a card and its gap each
+                        for reading[index] in root.readings: ReadingCard {
+                            reading: reading;
+                            visible: index < floor((parent.height - 22px) / 44px);
+                        }
+                    }
+                }
+
+                feed-frame := Rectangle {
                     x: (parent.width - self.width) / 2;
-                    y: (parent.height - self.height) / 2;
-                    width: 720 * feed-frame.unit;
-                    height: 540 * feed-frame.unit;
+                    y: parent.height - self.height;
+                    width: left.picture-width + 2 * root.feed-border;
+                    height: left.frame-height;
+                    background: black;
+                    border-width: root.press ? 6px : root.pulse ? 3px : 1px;
+                    border-color: root.press ? (root.likely ? Colors.likely : Colors.reached) : root.pulse ? white : Colors.frame;
 
-                    Image {
-                        width: 100%;
-                        height: 100%;
-                        source: root.feed;
-                        image-fit: fill;
-                    }
+                    property <length> unit: left.picture-width / 720;
 
-                    for rect in root.blobs: Mark {
-                        rect: rect;
-                        unit: feed-frame.unit;
-                        mark-color: Colors.blob;
-                        grow: 1px;
-                    }
-                    if root.has-eye: Mark {
-                        rect: root.eye;
-                        unit: feed-frame.unit;
-                        mark-color: root.blinking ? Colors.blinking : Colors.reached;
+                    Rectangle {
+                        x: root.feed-border;
+                        y: root.feed-border;
+                        width: left.picture-width;
+                        height: left.picture-width * 3 / 4;
+
+                        Image {
+                            width: 100%;
+                            height: 100%;
+                            source: root.feed;
+                            image-fit: fill;
+                        }
+
+                        for rect in root.blobs: Mark {
+                            rect: rect;
+                            unit: feed-frame.unit;
+                            mark-color: Colors.blob;
+                            grow: 1px;
+                        }
+                        if root.has-eye: Mark {
+                            rect: root.eye;
+                            unit: feed-frame.unit;
+                            mark-color: root.blinking ? Colors.blinking : Colors.reached;
+                        }
                     }
                 }
             }

@@ -35,6 +35,12 @@ const EDGE_ROWS: usize = 4;
 const EDGE_MIN_DROP: u32 = 3;
 /// The share of columns that have to. Measured 0.87 to 0.98 with a box up, under 0.5 without.
 const EDGE_MIN_SHARE: f32 = 0.7;
+/// Video's black: on a very dark background there's little room to get darker above this.
+const BLACK: u32 = 16;
+/// Game frames in a row with no edge before a text box counts as gone. Dark backgrounds make the edge
+/// flicker for up to about a second, and thinking it left throws the whole read away, while really
+/// leaving only costs a read of nothing for this long.
+const TEXT_FRAMES_TO_CLOSE: u32 = 40;
 
 /// What changed on a game frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,7 +94,9 @@ fn edge_share(frame: Luma<'_>, area: GameArea) -> f32 {
             let along = EDGE_LEFT + (EDGE_RIGHT - EDGE_LEFT) * column as f32 / EDGE_COLUMNS as f32;
             let x = (area.left + (area.width as f32 * along) as usize).min(frame.width - 1);
             let (above, below) = (band(EDGE_ABOVE, x), band(EDGE_BELOW, x));
-            below * 4 < above * 3 && above - below >= EDGE_MIN_DROP * EDGE_ROWS as u32
+            let black = BLACK * EDGE_ROWS as u32;
+            below.saturating_sub(black) * 4 < above.saturating_sub(black) * 3
+                && above.saturating_sub(below) >= EDGE_MIN_DROP * EDGE_ROWS as u32
         })
         .count();
     darker as f32 / EDGE_COLUMNS as f32
@@ -114,7 +122,7 @@ impl TextWatch {
             return None;
         }
         self.against += 1;
-        if self.against < if self.open { FRAMES_TO_CLOSE } else { FRAMES_TO_OPEN } {
+        if self.against < if self.open { TEXT_FRAMES_TO_CLOSE } else { FRAMES_TO_OPEN } {
             return None;
         }
         self.against = 0;
@@ -220,10 +228,28 @@ mod tests {
             assert_eq!(step_text(&mut watch, true), None);
         }
         assert_eq!(step_text(&mut watch, true), Some(Change::Opened));
-        assert_eq!(step_text(&mut watch, false), None, "one odd frame closes nothing");
-        assert_eq!(step_text(&mut watch, true), None);
-        assert_eq!(step_text(&mut watch, false), None);
+        // The edge flickering, like it does on a dark background, can't end a read
+        for _ in 0..5 {
+            for _ in 0..TEXT_FRAMES_TO_CLOSE - 1 {
+                assert_eq!(step_text(&mut watch, false), None);
+            }
+            assert_eq!(step_text(&mut watch, true), None);
+        }
+        for _ in 1..TEXT_FRAMES_TO_CLOSE {
+            assert_eq!(step_text(&mut watch, false), None);
+        }
         assert_eq!(step_text(&mut watch, false), Some(Change::Closed));
+    }
+
+    /// Over a nearly black background the box can only darken things a little.
+    #[test]
+    fn the_edge_shows_on_a_very_dark_background() {
+        let mut luma = vec![23u8; WIDTH * HEIGHT];
+        for row in (HEIGHT as f32 * 0.597) as usize..(HEIGHT as f32 * 0.88) as usize {
+            luma[row * WIDTH..(row + 1) * WIDTH].fill(18);
+        }
+        let frame = Luma { data: &luma, width: WIDTH, height: HEIGHT, stride: WIDTH };
+        assert!(edge_share(frame, area()) >= EDGE_MIN_SHARE, "{}", edge_share(frame, area()));
     }
 
     /// A dark band that only spans part of the width is scenery, like a hill or Link's back.

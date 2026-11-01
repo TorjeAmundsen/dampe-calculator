@@ -514,6 +514,8 @@ pub struct Detector {
     reread_due: bool,
     /// The latest game frame a flutter was recognized on, for giving up on a region.
     last_flutter_frame: i64,
+    /// Where the clean flutters of about the last loop started.
+    clean_starts: Vec<i64>,
     /// Whether to ignore the text box's part of the picture, where text keeps changing.
     ignore_text_box: bool,
 }
@@ -551,6 +553,7 @@ impl Detector {
             region: None,
             last_flutter_frame: 0,
             reread_due: false,
+            clean_starts: Vec::new(),
             ignore_text_box: false,
         }
     }
@@ -629,6 +632,7 @@ impl Detector {
     fn use_learned(&mut self, reader: Self, frames: &[(i64, Arc<[u8]>)], flutters: &[Flutter]) {
         // Frames that turn out to be part of a flutter leave the reference
         for flutter in flutters.iter().filter(|flutter| flutter.is_clean()) {
+            self.clean_starts.push(flutter.start);
             let range = flutter.start..flutter.start + flutter_len(flutter.count);
             for (game_frame, frame) in frames {
                 if range.contains(game_frame) {
@@ -792,10 +796,19 @@ impl Detector {
         let (compared, flutter) = self.read(picture);
         let blobs = self.centers.len();
         // Only a clean flutter keeps its frames out of the reference. Most others aren't flutters, and
-        // keeping frames out on their word can stop a bad reference from ever being replaced
+        // keeping frames out on their word can stop a bad reference from ever being replaced. So can a
+        // clean one exactly a loop after another: that's what a blink learned into the reference looks
+        // like on every pass, and only the frames it would keep out can replace it. A real flutter that
+        // lands there costs one frame out of the several in a reference.
         if let Some(flutter) = flutter.filter(Flutter::is_clean) {
-            let range = flutter.start..flutter.start + flutter_len(flutter.count);
-            self.pending.retain(|pending| !range.contains(&pending.game_frame));
+            let loop_back = flutter.start - IDLE_LOOP_FRAMES as i64;
+            let repeats = self.clean_starts.contains(&loop_back);
+            self.clean_starts.retain(|&start| start >= loop_back);
+            self.clean_starts.push(flutter.start);
+            if !repeats {
+                let range = flutter.start..flutter.start + flutter_len(flutter.count);
+                self.pending.retain(|pending| !range.contains(&pending.game_frame));
+            }
         }
         self.pending.push_back(Pending { game_frame: self.game_frame, frame });
         while self.pending.len() > SETTLE_FRAMES {
@@ -1286,6 +1299,34 @@ mod tests {
         let read = run(true);
         assert_eq!(strays(&read), 0, "{read:?}");
         assert_eq!(after_warmup(&read), after_warmup(&flutters));
+    }
+
+    /// Two flutters on the same point of the loop while learning leave a closed eye in the reference.
+    /// The open eye then reads as a perfect flutter on every pass, whose frames mustn't keep the
+    /// reference from ever being replaced, and the flutters it hides have to come back.
+    #[test]
+    fn a_blink_learned_into_the_reference_does_not_last() {
+        // After the first two, the gaps add up to whole loops, so they never come near that point again
+        let mut starts = vec![10i64, 59, 180];
+        for gap in [46, 55, 43, 52].into_iter().cycle().take(16) {
+            starts.push(starts[starts.len() - 1] + gap);
+        }
+        let mut states = vec![0u8; 1040];
+        for &start in &starts {
+            for blink in 0..3 {
+                states[(start + 3 * blink) as usize] = 1;
+                states[(start + 3 * blink + 1) as usize] = 2;
+            }
+        }
+        let read = read(&states, false);
+        let phantoms: Vec<_> = read
+            .iter()
+            .filter(|f| f.0 > 500 && f.0 % IDLE_LOOP_FRAMES as i64 == 10 && !starts.contains(&f.0))
+            .collect();
+        assert_eq!(phantoms, Vec::<&(i64, u8)>::new(), "the reference never healed: {read:?}");
+        for start in starts.iter().filter(|&&start| start > 500 && start < 950) {
+            assert!(read.contains(&(*start, 3)), "{start} not read: {read:?}");
+        }
     }
 
     /// With the eye never closing there's nothing to read, even though the head keeps moving.

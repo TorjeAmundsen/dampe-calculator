@@ -56,6 +56,16 @@ from a few seconds to half a minute.
 
 A cue can cancel if the video stops matching. If a new countdown starts right away, follow the new one.
 
+### The list of candidates
+
+Above the feed are the likeliest states of the RNG it's considering, as many as fit the window. The line above them says how
+many there are, and the chance the real one is none of them. Many can share a seed, differing only in Link's first blink,
+until he blinks. The bar behind each is its
+chance of being the real one, and its color says how far it's got: gray while searching, blue once it has predicted a blink,
+and green with both dots lit, which is what proving a state takes. Each shows its seed and the frame of Link's first blink,
+then how it matches what was seen: blinks it expected and saw (hit), expected and didn't see (miss), and saw but didn't expect
+(stray). The time on the right is when that state alone would give the Heart Piece, so it isn't a cue to follow.
+
 ### Angles
 
 His eyes have to be visible. If they're fully hidden for part of his animation, by his jaw or Link, it still gets there

@@ -9,7 +9,7 @@ use crate::picture::{GameArea, HEIGHT, Luma, Normalizer, WIDTH};
 use crate::rng::{BOX_GONE_TO_ROLL, StateWalk, rolls_heart_piece};
 use crate::solver::{Candidate, Observation};
 use crate::textbox::{Change, FRAMES_TO_CLOSE, TextWatch, TextboxWatch};
-use crate::tracker::{LIKELY_MIN_CONFIDENCE, Status, Tracker, Window};
+use crate::tracker::{LIKELY_MIN_CONFIDENCE, Readings, Status, Tracker, Window};
 
 /// Game frames between now and the earliest cue, so the countdown can be followed.
 const CUE_LEAD_FRAMES: i64 = 100;
@@ -127,8 +127,12 @@ pub enum Event {
     },
 }
 
+/// Readings sent to be shown, more than fit a window of the usual size.
+const SHOWN_READINGS: usize = 16;
+
 struct Update {
     status: Status,
+    readings: Readings,
     candidates: Vec<Candidate>,
     window: Option<Window>,
     likely: Option<(Window, f64)>,
@@ -204,6 +208,7 @@ fn tracker_thread(work: Receiver<Work>, updates: Sender<Update>) {
         }
         let update = Update {
             status: tracker.status(),
+            readings: tracker.readings(SHOWN_READINGS, now, MIN_WINDOW_FRAMES),
             candidates: tracker.candidates().to_vec(),
             window,
             likely: likely_update,
@@ -237,6 +242,8 @@ pub struct Session {
     updates: Receiver<Update>,
     status: Status,
     candidates: Vec<Candidate>,
+    /// New readings to show, if they changed since they were last taken.
+    new_readings: Option<Readings>,
     cue: Option<Window>,
     likely_cue: Option<Window>,
     /// Wait for each search instead of continuing, so a replay isn't ahead of its own searches.
@@ -274,6 +281,7 @@ impl Session {
             updates,
             status: Status::Collecting(0),
             candidates: Vec::new(),
+            new_readings: None,
             cue: None,
             likely_cue: None,
             wait_for_searches,
@@ -328,8 +336,20 @@ impl Session {
         self.navi.mark_gone(self.game_frame + 1);
         self.status = Status::Collecting(0);
         self.candidates.clear();
+        self.new_readings = Some(Readings::default());
         self.cue = None;
         self.likely_cue = None;
+    }
+
+    /// Seconds into the read that a text box leaving for `window` should leave, going by the clock.
+    pub fn window_seconds(&self, window: &Window) -> f64 {
+        let (first, last) = window.box_gone();
+        self.clock.seconds_at((first + last) / 2)
+    }
+
+    /// The readings, if they changed since the last call.
+    pub fn take_readings(&mut self) -> Option<Readings> {
+        self.new_readings.take()
     }
 
     /// Reading was forced with no text box up, so it's reading whatever is on screen.
@@ -350,6 +370,7 @@ impl Session {
         }
         self.status = Status::Collecting(0);
         self.candidates.clear();
+        self.new_readings = Some(Readings::default());
         self.cue = None;
         self.likely_cue = None;
         self.game_frame = -1;
@@ -365,6 +386,7 @@ impl Session {
         self.detector = self.new_detector();
         self.status = Status::Collecting(0);
         self.candidates.clear();
+        self.new_readings = Some(Readings::default());
         self.cue = None;
         self.likely_cue = None;
         self.game_frame = -1;
@@ -507,6 +529,7 @@ impl Session {
         }
         self.status = update.status;
         self.candidates = update.candidates;
+        self.new_readings = Some(update.readings);
         // A certain cue that's running is better than anything likely
         let update_likely = update.likely.filter(|_| self.cue.is_none());
         let new_likely = update_likely.map(|(window, _)| window);
@@ -662,7 +685,13 @@ mod tests {
             push_text(&mut session, frame, false, &mut events);
         }
         assert!(session.game_frame > 0, "the control: it was reading");
+        // The edge flickering while the box is up isn't the text ending, and keeps the read
+        let reading = session.game_frame;
         for frame in 40..50 {
+            push_frame(&mut session, frame, &mut events);
+        }
+        assert_eq!(session.game_frame, reading + 10, "a flicker threw the read away");
+        for frame in 50..100 {
             push_frame(&mut session, frame, &mut events);
         }
         assert_eq!(session.game_frame, -1);
