@@ -115,12 +115,14 @@ fn path() -> Option<PathBuf> {
 /// The platform and feed delay, remembered between runs.
 pub struct Timing {
     state: Mutex<State>,
+    /// Going by a lag given here, with no feed to measure a delay from.
+    manual: std::sync::atomic::AtomicBool,
 }
 
 impl Timing {
     pub fn load() -> Self {
         let text = path().and_then(|path| std::fs::read_to_string(path).ok()).unwrap_or_default();
-        Self { state: Mutex::new(State::parse(&text)) }
+        Self { state: Mutex::new(State::parse(&text)), manual: Default::default() }
     }
 
     fn save(state: &State) {
@@ -146,6 +148,12 @@ impl Timing {
         self.state.lock().unwrap().fixed_feed_delay = Some(milliseconds);
     }
 
+    /// With no video, how late presses are takes the place of the feed delay, for this run only.
+    pub fn use_manual_lag(&self, milliseconds: f64) {
+        self.fix_feed_delay(milliseconds);
+        self.manual.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// How long before a frame should arrive the press has to happen.
     pub fn lead_ms(&self) -> f64 {
         let state = self.state.lock().unwrap();
@@ -164,6 +172,9 @@ impl Timing {
 
     pub fn describe(&self) -> String {
         let state = self.state.lock().unwrap();
+        if self.manual.load(std::sync::atomic::Ordering::Relaxed) {
+            return format!("Input {:.0} ms + lag {:.0} ms", state.platform.input_latency_ms(), state.feed_delay_ms());
+        }
         let source = match (state.fixed_feed_delay, state.measurements.len()) {
             (Some(_), _) => "set by hand".to_owned(),
             (None, 0) => "not measured yet".to_owned(),

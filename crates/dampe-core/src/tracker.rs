@@ -345,7 +345,7 @@ impl Tracker {
                 misses: followed.latest.misses,
                 extras: followed.latest.extras,
                 confirmed: followed.confirmed,
-                next_window: first_window(&[followed.candidate], now + BOX_GONE_TO_ROLL, min_frames),
+                next_window: first_window(&[followed.candidate], now + BOX_GONE_TO_ROLL, min_frames, HORIZON),
             })
             .collect();
         Readings { top, total: shares.len(), not_found }
@@ -411,20 +411,20 @@ impl Tracker {
     /// The first time a dig gives the Heart Piece for every reading, from game frame `from` on,
     /// where the window is at least `min_frames` long.
     pub fn next_window(&self, from: i64, min_frames: i64) -> Option<Window> {
-        first_window(&self.candidates, from, min_frames)
+        first_window(&self.candidates, from, min_frames, HORIZON)
     }
 }
 
 /// The first time a dig gives the Heart Piece for all of `candidates`, from game frame `from` on, where
-/// the window is at least `min_frames` long.
-fn first_window(candidates: &[Candidate], from: i64, min_frames: i64) -> Option<Window> {
+/// the window is at least `min_frames` long, looking `horizon` ahead.
+pub(crate) fn first_window(candidates: &[Candidate], from: i64, min_frames: i64, horizon: i64) -> Option<Window> {
     if candidates.is_empty() {
         return None;
     }
     let mut walks: Vec<_> =
         candidates.iter().map(|candidate| (StateWalk::new(candidate.blinks()), candidate.offset)).collect();
     let mut run_start = None;
-    for frame in from..from + HORIZON {
+    for frame in from..from + horizon {
         let good = walks.iter_mut().all(|(walk, offset)| rolls_heart_piece(walk.state_for_roll(frame - *offset)));
         if good {
             run_start.get_or_insert(frame);

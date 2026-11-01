@@ -10,6 +10,7 @@ use std::os::windows::process::CommandExt;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 use dampe_core::detector::Rect;
@@ -138,7 +139,9 @@ fn reading_rows(readings: &Readings, left: impl Fn(&Reading) -> Option<f64>) -> 
         })
         .collect();
     let summary = match readings.total {
-        0 => "It takes 6 flutters to start looking".to_owned(),
+        0 => "It takes a few flutters to start looking".to_owned(),
+        // Without video there's no estimate of the real one being missing
+        total if readings.not_found == 0.0 => format!("{total} candidates"),
         1 => format!("1 candidate. Chance it's not this: {}", percent(readings.not_found)),
         total => format!("{total} candidates. Chance it's none of them: {}", percent(readings.not_found)),
     };
@@ -193,6 +196,21 @@ impl Gui {
                 window.set_eye_zoom(slint::Image::from_rgba8(zoom));
             }
         });
+    }
+
+    /// Shows the window for reading presses instead of video, with `count_keys` hearing about its
+    /// setting for hearing them from any program.
+    pub fn set_manual(&self, count_keys: impl Fn(bool) + Send + 'static) {
+        self.on_ui(move |window| {
+            window.set_manual(true);
+            window.set_global_keys_available(hotkey::AVAILABLE);
+            window.on_global_keys_changed(move |on| count_keys(on));
+        });
+    }
+
+    /// The keys couldn't be had from any program, so they're only heard in the window.
+    pub fn set_global_keys_off(&self) {
+        self.on_ui(|window| window.set_global_keys(false));
     }
 
     pub fn set_status(&self, status: String, tone: Tone) {
@@ -286,6 +304,7 @@ pub fn run(
     timing: Arc<Timing>,
     navi_gone: Arc<AtomicBool>,
     navi_key: String,
+    presses: Option<Sender<(u8, Instant)>>,
     read: impl FnOnce(Gui, Arc<AtomicBool>) + Send + 'static,
 ) -> Result<(), String> {
     slint::BackendSelector::new()
@@ -331,6 +350,11 @@ pub fn run(
     }
     window.set_navi_key(navi_key.into());
     window.on_navi_gone(move || navi_gone.store(true, Ordering::Relaxed));
+    if let Some(presses) = presses {
+        window.on_flutter_pressed(move |count| {
+            let _ = presses.send((count as u8, Instant::now()));
+        });
+    }
     window.on_open_log(|| {
         if let Some(path) = logfile::path() {
             open_log_folder(&path);

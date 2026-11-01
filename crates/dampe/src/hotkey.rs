@@ -6,11 +6,19 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 #[cfg(windows)]
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::Sender;
+use std::time::Instant;
 
 #[cfg(windows)]
-use windows::Win32::UI::Input::KeyboardAndMouse::{HOT_KEY_MODIFIERS, MOD_NOREPEAT, RegisterHotKey};
+use windows::Win32::Foundation::{LPARAM, WPARAM};
 #[cfg(windows)]
-use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, MSG, WM_HOTKEY};
+use windows::Win32::System::Threading::GetCurrentThreadId;
+#[cfg(windows)]
+use windows::Win32::UI::Input::KeyboardAndMouse::{HOT_KEY_MODIFIERS, MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey};
+#[cfg(windows)]
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetMessageW, MSG, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, WM_APP, WM_HOTKEY,
+};
 
 /// Whether `listen` does anything here.
 pub const AVAILABLE: bool = cfg!(windows);
@@ -51,6 +59,74 @@ pub fn listen(key: u32, pressed: Arc<AtomicBool>, failed: impl FnOnce() + Send +
 
 #[cfg(not(windows))]
 pub fn listen(_key: u32, _pressed: Arc<AtomicBool>, _failed: impl FnOnce() + Send + 'static) {}
+
+/// The number keys for a flutter's count, heard from any program while on. While they're on, other
+/// programs can't get those keys, which is why they can be turned off.
+pub struct CountKeys {
+    #[cfg(windows)]
+    thread: u32,
+}
+
+/// The counts, and their keys' codes, which are their characters.
+#[cfg(windows)]
+const COUNT_KEYS: [(u8, u32); 2] = [(3, 0x33), (4, 0x34)];
+#[cfg(windows)]
+const SET_COUNT_KEYS: u32 = WM_APP + 1;
+
+#[cfg(windows)]
+impl CountKeys {
+    /// Starts off. Presses go to `presses`, stamped as soon as they're known. `failed` hears about it
+    /// when another program has one of the keys.
+    pub fn new(presses: Sender<(u8, Instant)>, failed: impl Fn() + Send + 'static) -> Self {
+        let (thread_sender, thread) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut message = MSG::default();
+            // A thread only gets a message queue once it asks for messages, and it can't be sent any before
+            let _ = unsafe { PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE) };
+            let _ = thread_sender.send(unsafe { GetCurrentThreadId() });
+            let unregister = || {
+                for id in 0..COUNT_KEYS.len() {
+                    let _ = unsafe { UnregisterHotKey(None, id as i32) };
+                }
+            };
+            while unsafe { GetMessageW(&mut message, None, 0, 0) }.as_bool() {
+                if message.message == WM_HOTKEY {
+                    let Some(&(count, _)) = COUNT_KEYS.get(message.wParam.0) else { continue };
+                    if presses.send((count, Instant::now())).is_err() {
+                        return;
+                    }
+                } else if message.message == SET_COUNT_KEYS {
+                    unregister();
+                    if message.wParam.0 == 1 {
+                        let modifiers = HOT_KEY_MODIFIERS(MOD_NOREPEAT.0);
+                        let registered = COUNT_KEYS
+                            .iter()
+                            .enumerate()
+                            .all(|(id, &(_, key))| unsafe { RegisterHotKey(None, id as i32, modifiers, key) }.is_ok());
+                        if !registered {
+                            unregister();
+                            failed();
+                        }
+                    }
+                }
+            }
+        });
+        Self { thread: thread.recv().expect("the hotkey thread stopped") }
+    }
+
+    pub fn set_on(&self, on: bool) {
+        let _ = unsafe { PostThreadMessageW(self.thread, SET_COUNT_KEYS, WPARAM(usize::from(on)), LPARAM(0)) };
+    }
+}
+
+#[cfg(not(windows))]
+impl CountKeys {
+    pub fn new(_presses: Sender<(u8, Instant)>, _failed: impl Fn() + Send + 'static) -> Self {
+        Self {}
+    }
+
+    pub fn set_on(&self, _on: bool) {}
+}
 
 #[cfg(test)]
 mod tests {

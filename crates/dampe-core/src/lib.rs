@@ -9,9 +9,11 @@
 //! - [`tracker`] decides when to trust a state, and when to give up on it.
 //! - [`session`] runs all of it for one read, and says when to press.
 //! - [`rng`] is the game's model: `Rand_ZeroOne`, the blink timers and the dig roll.
+//! - [`manual`] finds the state from flutters pressed by hand instead, with no video.
 
 pub mod detector;
 pub mod eye;
+pub mod manual;
 pub mod navi;
 pub mod picture;
 pub mod rng;

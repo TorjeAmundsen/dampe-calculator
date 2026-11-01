@@ -62,6 +62,12 @@ impl GameClock {
         }
         1.0 / (self.seconds_at(1) - self.seconds_at(0))
     }
+
+    /// Where `seconds` falls in game frames, once there are any.
+    pub fn frame_at(&self, seconds: f64) -> Option<f64> {
+        let &(last_frame, _) = self.samples.back()?;
+        Some(last_frame as f64 + (seconds - self.seconds_at(last_frame)) * self.fps())
+    }
 }
 
 /// What a read has to say.
@@ -290,6 +296,11 @@ impl Session {
 
     pub fn fps(&self) -> f64 {
         self.clock.fps()
+    }
+
+    /// Where `seconds` falls in the read's game frames, if it's reading.
+    pub fn frame_at(&self, seconds: f64) -> Option<f64> {
+        self.clock.frame_at(seconds)
     }
 
     /// Replays wait for everything, so they come out the same every time. Live, video doesn't wait.
@@ -759,6 +770,9 @@ mod tests {
         }
         assert!((clock.fps() - 18.0).abs() < 1e-6, "{}", clock.fps());
         assert!((clock.seconds_at(400) - (3.0 + 400.0 / 18.0)).abs() < 1e-6);
+        let frame = clock.frame_at(3.0 + 150.25 / 18.0).expect("it has frames");
+        assert!((frame - 150.25).abs() < 1e-6, "{frame}");
+        assert_eq!(GameClock::default().frame_at(1.0), None);
     }
 
     #[test]

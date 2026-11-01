@@ -254,7 +254,12 @@ export component MainWindow inherits Window {
     in-out property <float> volume: 50;
     in property <[string]> log;
     in property <[ReadingRow]> readings;
-    in property <string> readings-summary: "It takes 6 flutters to start looking";
+    in property <string> readings-summary: "It takes a few flutters to start looking";
+    // Reading presses, so there's no video to show
+    in property <bool> manual;
+    in property <bool> global-keys-available;
+    // Keys 3 and 4 work from any program, while nothing else gets them
+    in-out property <bool> global-keys: true;
     // Room for the frame's thickest border around the picture
     property <length> feed-border: 6px;
     // The list always gets at least this much, for a window that's wide but not tall
@@ -265,6 +270,8 @@ export component MainWindow inherits Window {
     in property <string> navi-key;
     callback start-over();
     callback navi-gone();
+    callback flutter-pressed(int);
+    callback global-keys-changed(bool);
     callback open-log();
     callback platform-changed();
     callback sound-changed();
@@ -276,6 +283,14 @@ export component MainWindow inherits Window {
         key-pressed(event) => {
             if (root.navi-key-text != "" && event.text == root.navi-key-text) {
                 root.navi-gone();
+                return accept;
+            }
+            if (!event.repeat && event.text == "3") {
+                root.flutter-pressed(3);
+                return accept;
+            }
+            if (!event.repeat && event.text == "4") {
+                root.flutter-pressed(4);
                 return accept;
             }
             return reject;
@@ -371,6 +386,16 @@ export component MainWindow inherits Window {
                             unit: feed-frame.unit;
                             mark-color: root.blinking ? Colors.blinking : Colors.reached;
                         }
+                        if root.manual: Text {
+                            width: 100%;
+                            height: 100%;
+                            text: "Press 3 or 4 as each of Dampe's flutters ends.\nPress either again right away to flip a wrong count.\n\n" + (root.global-keys && root.global-keys-available ? "Works from any program." : "Keep this window focused.");
+                            color: Colors.secondary;
+                            font-size: 15px;
+                            wrap: word-wrap;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
                     }
                 }
             }
@@ -391,12 +416,19 @@ export component MainWindow inherits Window {
                     vertical-alignment: top;
                 }
 
-                Text {
+                // Its own background: on the window's alone, old text stayed under new text
+                Rectangle {
                     height: 18px;
-                    text: root.latest;
-                    color: Colors.secondary;
-                    font-size: 13px;
-                    overflow: elide;
+                    background: root.background;
+
+                    Text {
+                        width: 100%;
+                        height: 100%;
+                        text: root.latest;
+                        color: Colors.secondary;
+                        font-size: 13px;
+                        overflow: elide;
+                    }
                 }
 
                 Rectangle {
@@ -435,7 +467,7 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                Rectangle {
+                if !root.manual: Rectangle {
                     min-height: 90px;
                     preferred-height: 190px;
                     background: black;
@@ -460,7 +492,7 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                Text {
+                if !root.manual: Text {
                     height: 16px;
                     text: "Green: eye. Red: changing. Yellow: other changes.";
                     color: Colors.secondary;
@@ -509,6 +541,14 @@ export component MainWindow inherits Window {
                     overflow: elide;
                 }
 
+                if root.manual && root.global-keys-available: CheckBox {
+                    text: "Keys 3 and 4 work from any program";
+                    checked <=> root.global-keys;
+                    toggled => {
+                        root.global-keys-changed(self.checked);
+                    }
+                }
+
                 HorizontalLayout {
                     spacing: 8px;
                     alignment: stretch;
@@ -537,7 +577,7 @@ export component MainWindow inherits Window {
                 HorizontalLayout {
                     spacing: 8px;
 
-                    Button {
+                    if !root.manual: Button {
                         horizontal-stretch: 1;
                         text: "Force start (" + root.navi-key + ")";
                         clicked => {
@@ -547,7 +587,7 @@ export component MainWindow inherits Window {
 
                     Button {
                         horizontal-stretch: 1;
-                        text: "Start over";
+                        text: root.manual ? "Start over (" + root.navi-key + ")" : "Start over";
                         clicked => {
                             root.start-over();
                         }
@@ -561,7 +601,7 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                Text {
+                if !root.manual: Text {
                     text: "Reading starts by itself at Dampe's first text box. Force start is only for when it doesn't.";
                     color: Colors.secondary;
                     font-size: 11px;

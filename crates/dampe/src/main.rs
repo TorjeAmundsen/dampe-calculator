@@ -13,6 +13,9 @@ mod gui;
 mod hotkey;
 mod live;
 mod logfile;
+mod manuallive;
+mod presslog;
+mod pressreplay;
 mod replay;
 mod sound;
 mod timing;
@@ -21,6 +24,11 @@ const USAGE: &str = "usage:
   dampe                                          the same as dampe live
   dampe live [--device <name>] [--platform n64|vc] [--feed-delay-ms <ms>] [--no-window] [--no-sound] [--navi-key <F1-F24>]
                                                  read a device and cue the A press
+       [--log-presses <file>]                    also log flutter presses: keys 3 and 4 with the window focused, pressing either again right away flips
+  dampe live --manual [--platform n64|vc] [--lag-ms <ms>] [--navi-key <F1-F24>]
+                                                 no video: press 3 and 4 for each flutter, with the window focused
+  dampe press-stats <file>                       compare logged presses to the state that locked
+  dampe press-replay <file>                      run the manual solver on logged presses, scored against that state
   dampe diag [--device <name>] [--seconds <n>]   measure what the feed delivers
   dampe devices                                  list video devices
   dampe replay <video> [--truth <file>]          test on a recording, scored against RNG watch values
@@ -70,6 +78,8 @@ fn main() {
         Some("replay") => replay::run(&args[1..]),
         Some("live") => live::run(&args[1..]),
         Some("diag") => diag::run(&args[1..]),
+        Some("press-stats") => presslog::run(&args[1..]),
+        Some("press-replay") => pressreplay::run(&args[1..]),
         Some("devices") => capture::list_devices().map(|devices| devices.iter().for_each(|d| println!("{d}"))),
         _ => Err(USAGE.to_owned()),
     };
