@@ -35,7 +35,7 @@ fn config_dir() -> Option<std::path::PathBuf> {
         Some(path) => std::path::PathBuf::from(path),
         None => std::path::PathBuf::from(std::env::var_os("HOME")?).join(".config"),
     };
-    Some(config.join("dampe-rng"))
+    Some(config.join("dampe-calculator"))
 }
 
 /// It was started from a terminal, so errors can go there.
@@ -48,7 +48,7 @@ fn show_error(error: &str) -> bool {
     if !IN_TERMINAL.load(std::sync::atomic::Ordering::Relaxed) {
         use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
         use windows::core::{HSTRING, w};
-        unsafe { MessageBoxW(None, &HSTRING::from(error), w!("Dampe RNG"), MB_OK | MB_ICONERROR) };
+        unsafe { MessageBoxW(None, &HSTRING::from(error), w!("Dampe Calculator"), MB_OK | MB_ICONERROR) };
         return true;
     }
     let _ = error;

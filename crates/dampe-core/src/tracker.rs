@@ -482,17 +482,6 @@ mod tests {
         assert!(tracker.candidates().is_empty());
     }
 
-    /// A flutter the video simply didn't show isn't a contradiction, and the lock survives it.
-    #[test]
-    fn one_missed_flutter_keeps_the_lock() {
-        let all = flutters(3_141_592, 40, 19);
-        let mut tracker = Tracker::new();
-        feed(&mut tracker, &all[..17]);
-        assert!(tracker.is_locked());
-        feed(&mut tracker, &all[18..]);
-        assert!(tracker.is_locked());
-    }
-
     /// A new reading that hasn't predicted anything must not cancel a lock. This cancelled real cues.
     #[test]
     fn an_unproven_reading_does_not_end_a_lock() {

@@ -224,7 +224,7 @@ mod tests {
     /// head-on angle can't ever lock, but they don't count for it either: when they did, a wrong
     /// reading got locked on a real recording.
     #[test]
-    fn a_four_with_an_end_hidden_is_a_hit() {
+    fn a_four_with_an_end_hidden_is_neither_hit_nor_miss() {
         let (observations, now) = observed(1_234_567, 37, 12, 0);
         let candidate = Candidate { seed: 1_234_567, link_first: 37, offset: 0 };
         let four = observations.iter().position(|o| o.count == 4).expect("no 4 in there");

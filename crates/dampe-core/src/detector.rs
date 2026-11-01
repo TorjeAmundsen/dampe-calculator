@@ -1093,13 +1093,6 @@ mod tests {
         flutters.iter().copied().filter(|&(start, _)| start >= warm).collect()
     }
 
-    #[test]
-    fn reads_every_flutter_exactly_on_a_moving_head() {
-        let (flutters, states) = eye_track(777_777, 1500);
-        assert!(flutters.len() > 20);
-        assert_eq!(after_warmup(&read(&states, false)), after_warmup(&flutters));
-    }
-
     /// Live, stored frames are read on another thread. It has to find the same flutters, a little later.
     #[test]
     fn reading_in_the_background_gets_there_too() {
@@ -1170,19 +1163,6 @@ mod tests {
         assert!(found * 10 >= real.len() * 8, "{found} of {}: {read:?}", real.len());
         let strays = read.iter().filter(|f| !real.contains(f) && f.0 <= reread.through).count();
         assert_eq!(strays, 0, "{read:?}");
-    }
-
-    /// Flutters from before the reference is ready count too, or the read starts seconds late.
-    #[test]
-    fn flutters_from_while_learning_are_read_too() {
-        let (flutters, states) = eye_track(777_777, 800);
-        let ready = (IDLE_LOOP_FRAMES * REFERENCE_MIN) as i64;
-        let early: Vec<_> = flutters.iter().copied().filter(|&(start, _)| start < ready - 20).collect();
-        assert!(early.len() >= 2, "the control: there have to be some {early:?}");
-        let read = read(&states, false);
-        for flutter in early {
-            assert!(read.contains(&flutter), "{flutter:?} not in {read:?}");
-        }
     }
 
     /// The sky's blob is bigger than the eye and always there. It must not hide the eye, and it

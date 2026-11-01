@@ -1,4 +1,4 @@
-# dampe-rng
+# dampe-calculator
 
 Gets the Heart Piece from Dampe's digging game in Ocarina of Time on demand, instead of the usual 1 in 10.
 
@@ -16,7 +16,7 @@ find.
 
 ## Setup
 
-1. Download the zip for your system from the releases page, and take `dampe.exe` or `dampe` from it. Nothing needs installing. Windows may warn about an unknown publisher,
+1. Download the zip for your system from the [releases page](https://github.com/TorjeAmundsen/dampe-calculator/releases), and take `dampe.exe` or `dampe` from it. Nothing needs installing. Windows may warn about an unknown publisher,
    since the program isn't signed: choose More info, then Run anyway.
 2. In OBS, open Configure Virtual Camera next to Start Virtual Camera, and set it to the source with your game on it, so
    your stream layout isn't included.
@@ -90,7 +90,7 @@ which it measures from your presses and remembers. The first few presses may be 
     dampe diag       measure what the feed delivers, for reporting problems
 
 Running `dampe.exe` with no options is `dampe live`. Sound is off by default and set in the window, and it's always on
-with `--no-window`, which has no other cue. Settings are in `%APPDATA%\dampe-rng`, or `~/.config/dampe-rng` on Linux.
+with `--no-window`, which has no other cue. Settings are in `%APPDATA%\dampe-calculator`, or `~/.config/dampe-calculator` on Linux.
 
 ## Reporting problems
 

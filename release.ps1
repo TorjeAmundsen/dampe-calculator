@@ -113,7 +113,7 @@ function Build($name) {
     Copy-Item "$targetDir/$triple/dist/$binary" $output
     Copy-Item "$PSScriptRoot/README.md", "$PSScriptRoot/LICENSE" $output
 
-    $zip = "$PSScriptRoot/dist/dampe-rng-$version-$name.zip"
+    $zip = "$PSScriptRoot/dist/dampe-calculator-$version-$name.zip"
     Zip $output $zip $binary
     Write-Host "  Zipped: $zip"
 }

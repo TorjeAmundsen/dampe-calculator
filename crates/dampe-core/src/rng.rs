@@ -173,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn heart_piece_needs_the_fifth_draw_at_ten_percent() {
+    fn heart_piece_rolls_about_one_time_in_ten() {
         let hits = (0..STATES).step_by(97).filter(|&s| rolls_heart_piece(s)).count();
         let total = (0..STATES).step_by(97).count();
         let share = hits as f64 / total as f64;
