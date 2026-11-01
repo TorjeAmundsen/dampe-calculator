@@ -20,6 +20,7 @@ RECORDINGS = [
     ("recordings/skybusy.mkv", "skybusy"),
     ("recordings/english1.mkv", "english1"),
     ("recordings/slow_eye.mkv", "slow_eye"),
+    ("recordings/degraded.mkv", "degraded"),
 ]
 binary = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "target/diag/release/dampe.exe")
 

@@ -313,6 +313,9 @@ fn read(
                     log.line(format_args!("Read the early frames again knowing where the eye is: {found} flutters."));
                 }
                 Event::FoundLookingBack { flutters: found, seconds } => {
+                    if session.soft_feed() {
+                        log.line("The feed looks soft, so smaller changes count as blinks.");
+                    }
                     log.line(format_args!(
                         "Ready after {seconds:.1} s of the box. Found {found} flutters from before that, looking back."
                     ));

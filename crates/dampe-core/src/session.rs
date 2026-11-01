@@ -350,6 +350,11 @@ impl Session {
         self.clock.seconds_at((first + last) / 2)
     }
 
+    /// Whether the feed turned out to be soft, so smaller changes count.
+    pub fn soft_feed(&self) -> bool {
+        self.detector.soft_feed()
+    }
+
     /// The readings, if they changed since the last call.
     pub fn take_readings(&mut self) -> Option<Readings> {
         self.new_readings.take()

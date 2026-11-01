@@ -16,6 +16,18 @@ use crate::rng::{IDLE_LOOP_FRAMES, flutter_len};
 
 /// A pixel changed when it's this far from the reference.
 const CHANGE: i16 = 12;
+/// The same on a very soft feed, where blur cuts a blink's change in half. On a sharp feed this lets in
+/// enough more to cause a wrong lock, so it's only for feeds that need it.
+const SOFT_CHANGE: i16 = 7;
+/// [`edge_strength`] at and above which a feed counts as sharp, and at and below which it's very soft,
+/// with the threshold in proportion between them. It's 52 to 58 on every sharp recording, and 36 on one
+/// degraded feed.
+const SHARP_EDGES: i16 = 52;
+const SOFT_EDGES: i16 = 36;
+/// The share of neighbouring pixel differences above the strong edges, in thousandths.
+const STRONG_EDGE_SHARE: usize = 1;
+/// Frames of the ones it learned from that are measured.
+const EDGE_FRAMES: usize = 8;
 /// A new game frame changes at least this many pixels by this much. Lossless repeats change none;
 /// the margin is for noisy feeds.
 const NEW_FRAME_CHANGE: i16 = 2;
@@ -415,6 +427,36 @@ fn best_match(from: &[u8], to: &[u8], position: (f32, f32)) -> (f32, f32) {
     (position.0 + best.1 as f32, position.1 + best.2 as f32)
 }
 
+/// How strong a picture's strong edges are, above where a text box is: blur weakens them, and the
+/// sharp edges of the HUD keep this about the same whatever the scene.
+fn edge_strength(picture: &[u8]) -> u8 {
+    let mut counts = [0usize; 256];
+    let rows = &picture[..TEXT_BOX_TOP * WIDTH];
+    for (i, &pixel) in rows.iter().enumerate() {
+        if (i + 1) % WIDTH != 0 {
+            counts[usize::from(pixel.abs_diff(rows[i + 1]))] += 1;
+        }
+        if let Some(&below) = rows.get(i + WIDTH) {
+            counts[usize::from(pixel.abs_diff(below))] += 1;
+        }
+    }
+    let total: usize = counts.iter().sum();
+    let mut above = 0;
+    for (strength, count) in counts.iter().enumerate().rev() {
+        above += count;
+        if above * 1000 >= total * STRONG_EDGE_SHARE {
+            return strength as u8;
+        }
+    }
+    0
+}
+
+/// How far from the reference a pixel has to be to count as changed, for a feed this sharp.
+fn change_for(edge: u8) -> i16 {
+    let edge = i16::from(edge).clamp(SOFT_EDGES, SHARP_EDGES);
+    SOFT_CHANGE + (CHANGE - SOFT_CHANGE) * (edge - SOFT_EDGES) / (SHARP_EDGES - SOFT_EDGES)
+}
+
 /// One blob followed over frames. The eye's track blinks; the sky's stays on.
 struct Track {
     /// The game frames it had a blob on, ascending, and where.
@@ -518,6 +560,8 @@ pub struct Detector {
     clean_starts: Vec<i64>,
     /// Whether to ignore the text box's part of the picture, where text keeps changing.
     ignore_text_box: bool,
+    /// How far from the reference a pixel has to be to count as changed.
+    change: i16,
 }
 
 impl Default for Detector {
@@ -555,6 +599,7 @@ impl Detector {
             reread_due: false,
             clean_starts: Vec::new(),
             ignore_text_box: false,
+            change: CHANGE,
         }
     }
 
@@ -568,6 +613,11 @@ impl Detector {
     /// and that looks like blinking. His eyes can't be read through it anyway.
     pub fn ignore_text_box(&mut self) {
         self.ignore_text_box = true;
+    }
+
+    /// Whether the feed turned out to be soft, so smaller changes count.
+    pub fn soft_feed(&self) -> bool {
+        self.change < CHANGE
     }
 
     pub fn ignores_text_box(&self) -> bool {
@@ -587,6 +637,7 @@ impl Detector {
         reader.region = self.region;
         reader.game_frame = self.game_frame;
         reader.ignore_text_box = self.ignore_text_box;
+        reader.change = self.change;
         reader
     }
 
@@ -861,6 +912,12 @@ impl Detector {
     /// Reads the frames from while the reference was being built, now that it's ready.
     fn read_learned(&mut self) {
         let learned = self.learning.take().unwrap_or_default();
+        let step = (learned.len() / EDGE_FRAMES).max(1);
+        let mut edges: Vec<u8> = learned.iter().step_by(step).map(|(_, frame)| edge_strength(frame)).collect();
+        edges.sort_unstable();
+        if let Some(&edge) = edges.get(edges.len() / 2) {
+            self.change = change_for(edge);
+        }
         let latest = self.game_frame;
         let mut reader = self.reader();
         self.run(move || {
@@ -900,11 +957,12 @@ impl Detector {
             self.eye = EyeCurve::default();
             self.eye_followed.fill(None);
         }
+        let change = self.change;
         let Self { points, busy, mask, blobs, centers, bad_reference, region, ignore_text_box, .. } = self;
         centers.clear();
         let Some(reference) = points[point].reference() else { return false };
         for (((out, &pixel), &reference), busy) in mask.iter_mut().zip(picture).zip(reference).zip(busy.iter_mut()) {
-            let changed = (i16::from(pixel) - i16::from(reference)).abs() > CHANGE;
+            let changed = (i16::from(pixel) - i16::from(reference)).abs() > change;
             *busy += (f32::from(u8::from(changed)) - *busy) * BUSY_RATE;
             *out = u8::from(changed && *busy < BUSY_SHARE);
         }
@@ -1330,6 +1388,48 @@ mod tests {
         assert_eq!(phantoms, Vec::<&(i64, u8)>::new(), "the reference never healed: {read:?}");
         for start in starts.iter().filter(|&&start| start > 500 && start < 950) {
             assert!(read.contains(&(*start, 3)), "{start} not read: {read:?}");
+        }
+    }
+
+    /// Softens a picture about as much as a poor capture does.
+    fn blurred(picture: &[u8], times: usize) -> Vec<u8> {
+        let mut out = picture.to_vec();
+        for _ in 0..times {
+            let from = out.clone();
+            for y in 1..HEIGHT - 1 {
+                for x in 1..WIDTH - 1 {
+                    let i = y * WIDTH + x;
+                    let sum = u32::from(from[i - 1]) + u32::from(from[i + 1]) + u32::from(from[i - WIDTH]);
+                    out[i] = ((sum + u32::from(from[i + WIDTH]) + 4 * u32::from(from[i])) / 8) as u8;
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_threshold_goes_with_how_sharp_the_feed_is() {
+        assert_eq!(change_for(80), CHANGE);
+        assert_eq!(change_for(52), CHANGE);
+        assert_eq!(change_for(44), 9);
+        assert_eq!(change_for(36), SOFT_CHANGE);
+        assert_eq!(change_for(10), SOFT_CHANGE);
+    }
+
+    /// A soft feed's smaller changes have to count, and a sharp feed's threshold has to stay.
+    #[test]
+    fn only_a_soft_feed_lowers_the_threshold() {
+        let (_, states) = eye_track(777_777, 200);
+        for (times, soft) in [(0, false), (8, true)] {
+            let mut detector = Detector::new();
+            for (frame, &state) in states.iter().enumerate() {
+                let picture = blurred(&scene(frame as i64, state, false), times);
+                detector.push(&picture);
+            }
+            assert_eq!(detector.soft_feed(), soft, "blurred {times} times: {}", {
+                let picture = blurred(&scene(0, 0, false), times);
+                edge_strength(&picture)
+            });
         }
     }
 
