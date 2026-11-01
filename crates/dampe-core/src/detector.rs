@@ -570,6 +570,10 @@ impl Detector {
         self.ignore_text_box = true;
     }
 
+    pub fn ignores_text_box(&self) -> bool {
+        self.ignore_text_box
+    }
+
     /// A detector with what's needed to read stored frames on its own: the references and what's
     /// known about where to look.
     fn reader(&self) -> Self {

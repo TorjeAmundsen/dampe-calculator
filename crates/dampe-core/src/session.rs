@@ -294,7 +294,11 @@ impl Session {
 
     /// Replays wait for everything, so they come out the same every time. Live, video doesn't wait.
     fn new_detector(&self) -> Detector {
-        if self.wait_for_searches { Detector::new() } else { Detector::in_background() }
+        let mut detector = if self.wait_for_searches { Detector::new() } else { Detector::in_background() };
+        if self.reading_text || self.started_by_hand {
+            detector.ignore_text_box();
+        }
+        detector
     }
 
     /// Where the game is in the feed's frames, once that's known.
@@ -328,7 +332,6 @@ impl Session {
         if self.needs_box && !self.textbox.is_open() && !self.reading_text {
             self.started_by_hand = true;
             self.start_read();
-            self.detector.ignore_text_box();
             return;
         }
         let _ = self.work.send(Work::Reset);
@@ -365,9 +368,6 @@ impl Session {
         while self.updates.try_recv().is_ok() {}
         self.cadence = Cadence::new();
         self.detector = self.new_detector();
-        if self.reading_text {
-            self.detector.ignore_text_box();
-        }
         self.status = Status::Collecting(0);
         self.candidates.clear();
         self.new_readings = Some(Readings::default());
@@ -435,7 +435,6 @@ impl Session {
                     self.started_by_hand = false;
                     self.reading_text = true;
                     self.start_read();
-                    self.detector.ignore_text_box();
                     self.navi.box_opened();
                     events.push(Event::TextOpened);
                 }
@@ -671,6 +670,22 @@ mod tests {
         assert!(!session.started_by_hand());
         assert!(events.iter().any(|e| matches!(e, Event::TextOpened)));
         assert!(session.game_frame < 10, "it went on from before the box: {}", session.game_frame);
+    }
+
+    /// Her light starts the read over, and text keeps scrolling after that.
+    #[test]
+    fn the_text_box_stays_ignored_when_navi_starts_the_read_over() {
+        let mut session = Session::new(true, true);
+        let mut events = Vec::new();
+        for frame in 0..60 {
+            push_frame(&mut session, frame, &mut events);
+        }
+        for frame in 60..70 {
+            push_text(&mut session, frame, false, &mut events);
+        }
+        assert!(session.detector.ignores_text_box(), "the control: reading from a text box");
+        session.start_read();
+        assert!(session.detector.ignores_text_box());
     }
 
     /// Talking to someone else, or leaving, can't leave a read going for the next talk.
