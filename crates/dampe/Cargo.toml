@@ -7,6 +7,9 @@ license.workspace = true
 [features]
 # The published program: only its window, with no console, and errors in message boxes.
 windowed = []
+# Reading flutters from a video device, and everything for testing that. Without it, flutters can only
+# be pressed by hand, and the program has no code for reading video at all.
+video = ["dampe-core/video", "dep:linuxvideo", "dep:libc"]
 
 [dependencies]
 dampe-core = { path = "../dampe-core" }
@@ -19,8 +22,8 @@ slint-build = "1.18.1"
 # Slint finds fonts with fontconfig. Loaded when the program runs instead of linked, so building
 # for Linux from Windows doesn't need its development files.
 fontique = { version = "0.11.1", default-features = false, features = ["fontconfig-dlopen"] }
-linuxvideo = "0.3.5"
-libc = "0.2"
+linuxvideo = { version = "0.3.5", optional = true }
+libc = { version = "0.2", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-core = "0.62"

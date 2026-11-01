@@ -1,4 +1,4 @@
-//! `dampe live --manual`: no video at all. Flutters are pressed by hand in the window, and it says when
+//! Reading flutters from presses: `dampe live`, or `dampe live --manual` in a build with video. No video at all. Flutters are pressed by hand in the window, and it says when
 //! to press A. Nothing here reads a device, and nothing is ever sent to the game.
 
 use std::sync::Arc;
@@ -6,13 +6,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
-use dampe_core::manual::{DEFAULT_LAG_MS, GAME_FPS, ManualSession};
-use dampe_core::session::Event;
+use dampe_core::manual::{DEFAULT_LAG_MS, Event, GAME_FPS, ManualSession};
 use dampe_core::tracker::{Reading, Readings, Status};
 
+use crate::cues::{Log, start_countdown};
 use crate::gui::{self, Gui, Tone};
 use crate::hotkey::{self, CountKeys};
-use crate::live::{Log, start_countdown};
 use crate::logfile;
 use crate::sound::Sound;
 use crate::timing::{Platform, Timing};
@@ -163,7 +162,7 @@ fn read(
                     let tone = if status == Status::Locked { Tone::Locked } else { Tone::Reading };
                     gui.set_status(describe(&status), tone);
                 }
-                Event::Cue { seconds: box_seconds, window, .. } => {
+                Event::Cue { seconds: box_seconds, window } => {
                     let at_seconds = box_seconds - timing.lead_ms() / 1000.0;
                     let at = started + Duration::from_secs_f64(at_seconds.max(0.0));
                     let frames = window.last_roll - window.first_roll + 1;
@@ -178,7 +177,7 @@ fn read(
                     gui.set_cue(Some(at));
                     gui.set_likely(None);
                 }
-                Event::LikelyCue { seconds: box_seconds, chance, .. } => {
+                Event::LikelyCue { seconds: box_seconds, chance } => {
                     let at_seconds = box_seconds - timing.lead_ms() / 1000.0;
                     let at = started + Duration::from_secs_f64(at_seconds.max(0.0));
                     let percent = ((chance * 100.0).round() as u32).min(99);
@@ -216,7 +215,6 @@ fn read(
                     gui.set_likely(None);
                     gui.set_status("Cancelled: don't press yet".to_owned(), Tone::Warning);
                 }
-                _ => {}
             }
         }
     }

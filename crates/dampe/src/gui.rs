@@ -13,11 +13,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "video")]
 use dampe_core::detector::Rect;
+#[cfg(feature = "video")]
 use dampe_core::picture::{GAME_HEIGHT, GAME_WIDTH, GameArea, MARGIN_X, MARGIN_Y};
 use dampe_core::tracker::{Reading, Readings};
-use slint::{Color, ComponentHandle, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel, Weak};
+use slint::{Color, ComponentHandle, ModelRc, SharedString, VecModel, Weak};
+#[cfg(feature = "video")]
+use slint::{Rgba8Pixel, SharedPixelBuffer};
 
+#[cfg(feature = "video")]
 use crate::capture::CapturedFrame;
 use crate::hotkey;
 use crate::logfile;
@@ -37,9 +42,13 @@ const PRESS_SECONDS: f64 = 0.6;
 /// The flashes come on these many seconds before the moment to press.
 const PULSE_AT: [f64; 3] = [3.0, 2.0, 1.0];
 /// The zoomed view: this part of the game's picture around the eye, and its size in pixels.
+#[cfg(feature = "video")]
 const ZOOM_GAME_WIDTH: usize = 80;
+#[cfg(feature = "video")]
 const ZOOM_GAME_HEIGHT: usize = 60;
+#[cfg(feature = "video")]
 const ZOOM_WIDTH: u32 = 160;
+#[cfg(feature = "video")]
 const ZOOM_HEIGHT: u32 = 120;
 
 const READING: Color = Color::from_rgb_u8(255, 255, 255);
@@ -55,6 +64,7 @@ pub enum Tone {
 }
 
 /// One rectangle of the game's picture from the frame, in color.
+#[cfg(feature = "video")]
 fn pixels(
     frame: &CapturedFrame,
     area: GameArea,
@@ -89,6 +99,7 @@ fn pixels(
 }
 
 /// Video range BT.709, what OBS Virtual Camera sends.
+#[cfg(feature = "video")]
 #[inline]
 fn bt709(y: u8, u: u8, v: u8) -> Rgba8Pixel {
     let (y, u, v) = (298 * (i32::from(y) - 16), i32::from(u) - 128, i32::from(v) - 128);
@@ -96,6 +107,7 @@ fn bt709(y: u8, u: u8, v: u8) -> Rgba8Pixel {
     Rgba8Pixel { r: channel(y + 459 * v), g: channel(y - 55 * u - 136 * v), b: channel(y + 541 * u), a: 255 }
 }
 
+#[cfg(feature = "video")]
 fn game_rect(rect: Rect) -> GameRect {
     GameRect {
         x: (usize::from(rect.left) + MARGIN_X) as f32,
@@ -148,10 +160,19 @@ fn reading_rows(readings: &Readings, left: impl Fn(&Reading) -> Option<f64>) -> 
     (rows, summary)
 }
 
+/// Repaints the whole window with the next change, if it isn't showing video. See the rectangle this
+/// flips for why. Video's frames are too frequent and too big to add this to, and hide the problem.
+fn repaint_all(window: &MainWindow) {
+    if window.get_manual() {
+        window.set_repaint_all(!window.get_repaint_all());
+    }
+}
+
 /// Talks to the window from the read's thread.
 #[derive(Clone)]
 pub struct Gui {
     window: Weak<MainWindow>,
+    #[cfg(feature = "video")]
     picture_pending: Arc<AtomicBool>,
     cue: Arc<std::sync::Mutex<Option<Instant>>>,
 }
@@ -162,11 +183,13 @@ impl Gui {
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(window) = window.upgrade() {
                 change(&window);
+                repaint_all(&window);
             }
         });
     }
 
     /// Shows a new game frame, unless the window hasn't caught up with the last one.
+    #[cfg(feature = "video")]
     pub fn show_frame(&self, frame: &CapturedFrame, area: GameArea, blobs: Vec<Rect>, eye: Option<Rect>) {
         if self.picture_pending.swap(true, Ordering::AcqRel) {
             return;
@@ -224,6 +247,7 @@ impl Gui {
         });
     }
 
+    #[cfg(feature = "video")]
     pub fn set_timing(&self, timing: String) {
         self.on_ui(move |window| window.set_timing(timing.into()));
     }
@@ -361,7 +385,12 @@ pub fn run(
         }
     });
 
-    let gui = Gui { window: window.as_weak(), picture_pending: Arc::new(AtomicBool::new(false)), cue: Arc::default() };
+    let gui = Gui {
+        window: window.as_weak(),
+        #[cfg(feature = "video")]
+        picture_pending: Arc::new(AtomicBool::new(false)),
+        cue: Arc::default(),
+    };
 
     let cue = gui.cue.clone();
     let shown = Rc::new(Cell::new(false));
@@ -391,6 +420,7 @@ pub fn run(
             window.set_countdown(text);
         }
         window.set_countdown_share((1.0 - left / BAR_SECONDS).clamp(0.0, 1.0) as f32);
+        repaint_all(&window);
     });
 
     let thread_gui = gui.clone();

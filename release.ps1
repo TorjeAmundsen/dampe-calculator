@@ -3,6 +3,7 @@
 #
 #   ./release.ps1                  every target
 #   ./release.ps1 windows-x64      only this one, or linux-x64
+#   ./release.ps1 --video          the build that also reads video, with or without a target
 #
 # Same OS as this machine: plain cargo. Linux from Windows: cargo-zigbuild and Zig. Windows from
 # Linux isn't set up, and is skipped.
@@ -84,9 +85,10 @@ function Build($name) {
     }
     rustup target add $triple | Out-Host
 
-    $common = @("--profile", "dist", "-p", "dampe")
+    $features = @(if ($video) { "video" }) + @(if ($isWindowsTarget) { "windowed" })
+    $common = @("--profile", "dist", "-p", "dampe") + @(if ($features) { "--features", ($features -join ",") })
     if ($isWindowsTarget) {
-        Invoke-Cargo (@("build", "--target", $triple, "--features", "windowed") + $common)
+        Invoke-Cargo (@("build", "--target", $triple) + $common)
     }
     elseif ($IsLinux) {
         Invoke-Cargo (@("build", "--target", $triple) + $common)
@@ -107,18 +109,21 @@ function Build($name) {
     }
 
     $binary = if ($isWindowsTarget) { "dampe.exe" } else { "dampe" }
-    $output = "$PSScriptRoot/dist/$name"
+    $build = if ($video) { "video-$name" } else { $name }
+    $output = "$PSScriptRoot/dist/$build"
     if (Test-Path $output) { Remove-Item $output -Recurse -Force }
     New-Item -ItemType Directory -Path $output | Out-Null
     Copy-Item "$targetDir/$triple/dist/$binary" $output
     Copy-Item "$PSScriptRoot/README.md", "$PSScriptRoot/LICENSE" $output
 
-    $zip = "$PSScriptRoot/dist/dampe-calculator-$version-$name.zip"
+    $zip = "$PSScriptRoot/dist/dampe-calculator-$version-$build.zip"
     Zip $output $zip $binary
     Write-Host "  Zipped: $zip"
 }
 
-$selected = if ($args.Count -gt 0) { $args } else { $targets.Keys }
+$video = $args -contains "--video"
+$named = @($args | Where-Object { $_ -ne "--video" })
+$selected = if ($named.Count -gt 0) { $named } else { $targets.Keys }
 foreach ($name in $selected) {
     if (-not $targets.Contains($name)) {
         Write-Error "Unknown target '$name'. Targets: $($targets.Keys -join ', ')"

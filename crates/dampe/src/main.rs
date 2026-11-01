@@ -1,25 +1,43 @@
-//! Reads Dampe's blinks from video and says when to press A for the Heart Piece. Video in, a cue
-//! out: it never sends any input to the game.
+//! Works out the RNG from Dampe's blinks and says when to press A for the Heart Piece. Blinks are
+//! pressed by hand, or read from video in builds with the `video` feature. It never sends any input
+//! to the game.
 
 #![cfg_attr(feature = "windowed", windows_subsystem = "windows")]
 
-#[cfg(windows)]
+#[cfg(all(feature = "video", windows))]
 mod capture;
-#[cfg(not(windows))]
+#[cfg(all(feature = "video", not(windows)))]
 #[path = "capture_v4l2.rs"]
 mod capture;
+mod cues;
+#[cfg(feature = "video")]
 mod diag;
 mod gui;
 mod hotkey;
+#[cfg(feature = "video")]
 mod live;
 mod logfile;
 mod manuallive;
+#[cfg(feature = "video")]
 mod presslog;
+#[cfg(feature = "video")]
 mod pressreplay;
+#[cfg(feature = "video")]
 mod replay;
 mod sound;
 mod timing;
 
+// Without video, reading presses is all there is to run
+#[cfg(not(feature = "video"))]
+use manuallive as live;
+
+#[cfg(not(feature = "video"))]
+const USAGE: &str = "usage:
+  dampe                                          the same as dampe live
+  dampe live [--platform n64|vc] [--lag-ms <ms>] [--navi-key <F1-F24>]
+                                                 press 3 and 4 for each flutter, and cue the A press";
+
+#[cfg(feature = "video")]
 const USAGE: &str = "usage:
   dampe                                          the same as dampe live
   dampe live [--device <name>] [--platform n64|vc] [--feed-delay-ms <ms>] [--no-window] [--no-sound] [--navi-key <F1-F24>]
@@ -75,11 +93,16 @@ fn main() {
     let double_clicked = args.is_empty();
     let result = match args.first().map(String::as_str) {
         None => live::run(&[]),
+        #[cfg(feature = "video")]
         Some("replay") => replay::run(&args[1..]),
         Some("live") => live::run(&args[1..]),
+        #[cfg(feature = "video")]
         Some("diag") => diag::run(&args[1..]),
+        #[cfg(feature = "video")]
         Some("press-stats") => presslog::run(&args[1..]),
+        #[cfg(feature = "video")]
         Some("press-replay") => pressreplay::run(&args[1..]),
+        #[cfg(feature = "video")]
         Some("devices") => capture::list_devices().map(|devices| devices.iter().for_each(|d| println!("{d}"))),
         _ => Err(USAGE.to_owned()),
     };

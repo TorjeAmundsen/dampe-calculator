@@ -4,4 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Reading flutters from video. Without it, only reading them from key presses is left.
+video = []
+
 [dependencies]

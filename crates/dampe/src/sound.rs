@@ -119,6 +119,7 @@ impl Sound {
     }
 
     /// Turns it on for this run only.
+    #[cfg(feature = "video")]
     pub fn force_on(&self) {
         self.enabled.store(true, Ordering::Relaxed);
     }

@@ -257,6 +257,8 @@ export component MainWindow inherits Window {
     in property <string> readings-summary: "It takes a few flutters to start looking";
     // Reading presses, so there's no video to show
     in property <bool> manual;
+    // Flipped to repaint the whole window
+    in property <bool> repaint-all;
     in property <bool> global-keys-available;
     // Keys 3 and 4 work from any program, while nothing else gets them
     in-out property <bool> global-keys: true;
@@ -280,6 +282,14 @@ export component MainWindow inherits Window {
     forward-focus: keys;
 
     keys := FocusScope {
+        // Slint's software renderer clears each changed area but draws text across the box around all
+        // of them, so with several small changes at once, text ended up over old text. Changing this
+        // changes the whole window, which makes it one area. Both are fully transparent: any opacity at
+        // all shifts the whole background by a shade, which flickers.
+        Rectangle {
+            background: root.repaint-all ? #00000000 : #01010100;
+        }
+
         key-pressed(event) => {
             if (root.navi-key-text != "" && event.text == root.navi-key-text) {
                 root.navi-gone();
@@ -416,19 +426,12 @@ export component MainWindow inherits Window {
                     vertical-alignment: top;
                 }
 
-                // Its own background: on the window's alone, old text stayed under new text
-                Rectangle {
+                Text {
                     height: 18px;
-                    background: root.background;
-
-                    Text {
-                        width: 100%;
-                        height: 100%;
-                        text: root.latest;
-                        color: Colors.secondary;
-                        font-size: 13px;
-                        overflow: elide;
-                    }
+                    text: root.latest;
+                    color: Colors.secondary;
+                    font-size: 13px;
+                    overflow: elide;
                 }
 
                 Rectangle {

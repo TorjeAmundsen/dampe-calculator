@@ -9,7 +9,6 @@
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use crate::rng::{Blinks, STATES, StateWalk, flutter_len, rolls_heart_piece};
-use crate::session::Event;
 use crate::solver::Candidate;
 use crate::tracker::{CONFIRMATIONS, LIKELY_MIN_CONFIDENCE, Reading, Readings, Status, Window, first_window};
 
@@ -492,6 +491,30 @@ impl ManualTracker {
     }
 }
 
+/// What a read from presses has to say.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Event {
+    Status(Status),
+    /// Press A so the text box leaves at `seconds`, on the clock presses are timed by.
+    Cue {
+        seconds: f64,
+        window: Window,
+    },
+    /// Probably press A so the text box leaves at `seconds`: no state is proven yet.
+    LikelyCue {
+        seconds: f64,
+        chance: f64,
+    },
+    /// The chance of the running likely cue changed.
+    LikelyChance {
+        chance: f64,
+    },
+    /// A likely cue isn't likely any more.
+    LikelyCancelled,
+    /// A cue isn't valid any more: the presses contradicted it.
+    CueCancelled,
+}
+
 struct Update {
     generation: u64,
     status: Status,
@@ -581,7 +604,7 @@ fn search_thread(work: Receiver<Work>, updates: Sender<Update>) {
     }
 }
 
-/// A read from presses, the counterpart of [`crate::session::Session`] for video. Times are seconds
+/// A read from presses, the counterpart of `session::Session` for video. Times are seconds
 /// on one clock, and frames are those seconds at [`GAME_FPS`]. Cues say when the text box should leave
 /// on the clock presses are timed by: allowing for how late presses are is up to the caller.
 pub struct ManualSession {
@@ -705,14 +728,8 @@ impl ManualSession {
                 events.push(Event::LikelyCancelled);
             }
             if let Some((window, chance)) = update_likely {
-                let (first, last) = window.box_gone();
                 self.likely_cue = Some(window);
-                events.push(Event::LikelyCue {
-                    box_frame: (first + last) / 2,
-                    seconds: Self::window_seconds(&window),
-                    window,
-                    chance,
-                });
+                events.push(Event::LikelyCue { seconds: Self::window_seconds(&window), chance });
             }
         }
         if self.status != Status::Locked {
@@ -724,9 +741,8 @@ impl ManualSession {
         if self.cue.is_none()
             && let Some(window) = update.window
         {
-            let (first, last) = window.box_gone();
             self.cue = Some(window);
-            events.push(Event::Cue { box_frame: (first + last) / 2, seconds: Self::window_seconds(&window), window });
+            events.push(Event::Cue { seconds: Self::window_seconds(&window), window });
         }
     }
 }

@@ -13,12 +13,13 @@ use dampe_core::tracker::Status;
 use dampe_core::tracker::{Reading, Readings};
 
 use crate::capture::{Capture, list_devices};
+use crate::cues::{Log, start_countdown};
 use crate::gui::{self, Gui, Tone};
 use crate::hotkey;
 use crate::logfile;
 use crate::manuallive;
 use crate::presslog::PressLog;
-use crate::sound::{self, Sound};
+use crate::sound::Sound;
 use crate::timing::{Platform, Timing};
 
 /// How often the times in the list of readings count down. Fast enough to press by.
@@ -27,51 +28,10 @@ const DEFAULT_DEVICE: &str = "OBS Virtual Camera";
 const DEFAULT_NAVI_KEY: &str = "F8";
 /// How far from the countdown's zero the box can leave and still have been following it.
 const CUE_FOLLOWED: f64 = 1.0;
-/// The countdown's short tones come this many seconds before the long one.
-const COUNTDOWN: [u64; 3] = [3, 2, 1];
 const NO_FRAMES_WARNING: Duration = Duration::from_secs(2);
 
 /// How long without a flutter before saying why.
 const SILENCE_REPORT: Duration = Duration::from_secs(10);
-
-/// Where a line of output goes: the terminal, and the window if there is one.
-#[derive(Clone)]
-pub(crate) struct Log {
-    pub(crate) started: Instant,
-    pub(crate) gui: Option<Gui>,
-}
-
-impl Log {
-    /// A line with the time since the program started.
-    pub(crate) fn line(&self, text: impl std::fmt::Display) {
-        let elapsed = self.started.elapsed().as_secs_f64();
-        let line = format!("[{:02}:{:04.1}] {text}", (elapsed / 60.0) as u64, elapsed % 60.0);
-        logfile::line(&line);
-        if let Some(gui) = &self.gui {
-            gui.add_log(line);
-        }
-    }
-}
-
-/// Plays a countdown ending at `at`, if the sound is on, unless told to stop first.
-pub(crate) fn start_countdown(at: Instant, sound: Arc<Sound>) -> Sender<()> {
-    let (cancel, cancelled) = channel();
-    std::thread::spawn(move || {
-        for seconds in COUNTDOWN {
-            let Some(when) = at.checked_sub(Duration::from_secs(seconds)) else { continue };
-            let wait = when.saturating_duration_since(Instant::now());
-            if !wait.is_zero() && cancelled.recv_timeout(wait).is_ok() {
-                return;
-            }
-            sound.cue(sound::TICK);
-        }
-        let wait = at.saturating_duration_since(Instant::now());
-        if wait.is_zero() || cancelled.recv_timeout(wait).is_err() {
-            sound.cue(sound::GO);
-        }
-    });
-    cancel
-}
 
 fn describe(status: &Status) -> String {
     match status {

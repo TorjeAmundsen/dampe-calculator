@@ -17,8 +17,10 @@ const GAME_FRAME_MS: f64 = 50.0;
 /// through OBS Virtual Camera.
 const DEFAULT_FEED_DELAY_MS: f64 = 100.0;
 /// Presses kept for the median, so one mistimed press can't move it far.
+#[cfg(any(feature = "video", test))]
 const MEASUREMENTS_KEPT: usize = 9;
 /// A measured feed delay outside this is a press that wasn't following the countdown.
+#[cfg(any(feature = "video", test))]
 const PLAUSIBLE_FEED_DELAY_MS: std::ops::RangeInclusive<f64> = 0.0..=500.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,6 +79,7 @@ impl State {
     }
 
     /// Adds a press that left the box `after_zero_ms` after the countdown's zero. Whether it counted.
+    #[cfg(any(feature = "video", test))]
     fn learn(&mut self, after_zero_ms: f64) -> bool {
         let measured = after_zero_ms - self.platform.input_latency_ms();
         if self.fixed_feed_delay.is_some() || !PLAUSIBLE_FEED_DELAY_MS.contains(&measured) {
@@ -161,6 +164,7 @@ impl Timing {
     }
 
     /// Learns from a press. Whether it counted.
+    #[cfg(feature = "video")]
     pub fn learn(&self, after_zero_ms: f64) -> bool {
         let mut state = self.state.lock().unwrap();
         let counted = state.learn(after_zero_ms);
