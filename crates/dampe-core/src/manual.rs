@@ -59,6 +59,16 @@ const MAX_FOLLOWED: usize = 300_000;
 /// Link's first draw comes on one of these frames after the first renewal.
 const LINK_PHASES: std::ops::RangeInclusive<i64> = 1..=99;
 
+/// How much less likely a Link phase is than if all were equally so, as a cost. His timer waits 20 to 99
+/// frames, and a renewal lands inside a long wait more often than a short one, so his next draw is
+/// `k` frames away in proportion to the waits at least that long: all 80 up to 20, then fewer. Those
+/// weights add up to 59.5 of 99, which this takes off so the average stays where
+/// [`NOT_FOUND_HEAD_START`] counts it.
+fn link_phase_cost(link_first: i64) -> f64 {
+    let waits_that_long = (100 - link_first.max(20)) as f64 / 80.0;
+    -(waits_that_long * 99.0 / 59.5).ln()
+}
+
 /// The share of all readings' weight one state needs to be trusted.
 const LOCK_SHARE: f64 = 0.99;
 /// Presses a reading has to explain to be trusted.
@@ -114,6 +124,8 @@ pub struct Score {
     pub pairs: u32,
     /// How late presses are around this reading's flutters, in game frames.
     pub lateness: f64,
+    /// The pairs that lateness comes from: not the badly timed ones.
+    timed: u32,
     /// Lower is better: minus the log of how likely the presses are.
     pub cost: f64,
     pub misses: u32,
@@ -139,12 +151,18 @@ impl Score {
     /// A reading whose first flutter, of `count` and ending on model frame `end`, is `press`.
     #[inline]
     fn first(press: Press, end: i64, count: u8) -> Self {
-        Self { pairs: 1, lateness: press.frame - end as f64, cost: count_cost(count, press.count), ..Self::default() }
+        Self {
+            pairs: 1,
+            lateness: press.frame - end as f64,
+            timed: 1,
+            cost: count_cost(count, press.count),
+            ..Self::default()
+        }
     }
 
     #[inline]
     fn pair(&mut self, press: Press, late_by: f64, count: u8) {
-        let n = f64::from(self.pairs);
+        let n = f64::from(self.timed);
         // How far off it is around a lateness that's only known so well, so the sum doesn't depend on order
         let timing = late_by * late_by * n / (n + 1.0) / (2.0 * SIGMA * SIGMA);
         if timing >= OUTLIER_COST {
@@ -152,6 +170,7 @@ impl Score {
         } else {
             self.cost += timing;
             self.lateness += late_by / (n + 1.0);
+            self.timed += 1;
         }
         self.cost += count_cost(count, press.count);
         self.pairs += 1;
@@ -214,6 +233,12 @@ pub struct Followed {
 }
 
 impl Followed {
+    /// What shares come from, and what readings are ranked by. The limit on a reading is only about how
+    /// it fits the presses, so this isn't in its score: a rare phase is still a possible one.
+    fn total_cost(&self) -> f64 {
+        self.score.cost + link_phase_cost(self.link_first)
+    }
+
     /// Model frames plus this candidate's offset are press frames.
     pub fn candidate(&self) -> Candidate {
         Candidate { seed: self.seed, link_first: self.link_first, offset: self.score.lateness.round() as i64 }
@@ -339,7 +364,7 @@ impl ManualTracker {
         if self.followed.is_empty() {
             self.scan(now);
         }
-        self.followed.sort_unstable_by(|a, b| a.score.cost.total_cmp(&b.score.cost));
+        self.followed.sort_unstable_by(|a, b| a.total_cost().total_cmp(&b.total_cost()));
         self.followed.truncate(MAX_FOLLOWED);
         if !self.locked
             && let Some(best) = self.followed.first()
@@ -397,8 +422,8 @@ impl ManualTracker {
     /// accepted its state, so nothing's held back for none of them after that.
     fn shares_and_not_found(&self) -> (Vec<f64>, f64) {
         let Some(best) = self.followed.first() else { return (Vec::new(), 0.0) };
-        let best = best.score.cost;
-        let weights: Vec<f64> = self.followed.iter().map(|f| (best - f.score.cost).exp()).collect();
+        let best = best.total_cost();
+        let weights: Vec<f64> = self.followed.iter().map(|f| (best - f.total_cost()).exp()).collect();
         let not_found = if self.locked { 0.0 } else { (best - self.not_found_cost()).exp() };
         let total = weights.iter().sum::<f64>() + not_found;
         (weights.into_iter().map(|weight| weight / total).collect(), not_found / total)
@@ -828,6 +853,40 @@ mod tests {
         assert!(cost_with(0.0) < cost_with(2.0));
         assert!(cost_with(2.0) < cost_with(5.0));
         assert_eq!(cost_with(8.0), cost_with(9.0), "one bad press is only so bad");
+    }
+
+    /// A badly timed press says nothing about the lateness, so it shouldn't water down the next one.
+    #[test]
+    fn a_badly_timed_press_does_not_change_how_the_lateness_is_fitted() {
+        let press = Press { frame: 0.0, count: 3 };
+        let mut score = Score::first(press, 0, 3);
+        score.pair(press, 0.0, 3);
+        score.pair(press, 0.0, 3);
+        score.pair(press, 9.5, 3);
+        assert_eq!(score.lateness, 0.0, "the outlier itself doesn't count");
+        assert_eq!(score.pairs, 4);
+        score.pair(press, 3.0, 3);
+        assert_eq!(score.lateness, 3.0 / 4.0, "3 good presses before it, not 4");
+    }
+
+    #[test]
+    fn link_phases_are_weighted_by_the_waits_that_reach_them() {
+        let weight = |phase| (-link_phase_cost(phase)).exp();
+        assert_eq!(weight(1), weight(20));
+        assert!((weight(20) / weight(90) - 8.0).abs() < 1e-9, "80 waits reach 20, 10 reach 90");
+        let average = LINK_PHASES.map(weight).sum::<f64>() / 99.0;
+        assert!((average - 1.0).abs() < 1e-9, "{average}");
+    }
+
+    /// Two readings that fit the presses the same.
+    #[test]
+    fn a_reading_with_a_likelier_link_phase_gets_more_share() {
+        let presses = exact(3_141_592, 40, 8, 5.0);
+        let score = cost(&presses).expect("it fits");
+        let followed = |link_first| Followed { seed: 3_141_592, link_first, score };
+        let tracker = ManualTracker { presses, followed: vec![followed(10), followed(90)], ..ManualTracker::default() };
+        let shares = tracker.shares();
+        assert!((shares[0] / shares[1] - 8.0).abs() < 1e-9, "{shares:?}");
     }
 
     /// Pressing 3 on a real 4 is common, the other way round isn't.
