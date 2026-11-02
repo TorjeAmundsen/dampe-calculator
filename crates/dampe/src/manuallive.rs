@@ -7,7 +7,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use dampe_core::manual::{DEFAULT_LAG_MS, Event, GAME_FPS, ManualSession};
-use dampe_core::reading::{Reading, Readings, Status};
+use dampe_core::reading::{Reading, Readings, Status, Window};
 
 use crate::cues::{Log, start_countdown};
 use crate::gui::{self, Gui, Tone};
@@ -25,7 +25,9 @@ const READINGS_REFRESH: Duration = Duration::from_millis(100);
 /// What `--lag-ms` takes: earlier than the flutter's end is possible, by someone anticipating it.
 const LAG_RANGE_MS: std::ops::RangeInclusive<f64> = -500.0..=2000.0;
 
-const WAITING: &str = "Talk to Dampe, and start pressing once Navi is done";
+const WAITING: &str = "Talk to Dampe, then press once Navi is done";
+/// Counts shown of the last presses, enough to catch a wrong one.
+const RECENT_PRESSES: usize = 6;
 
 fn tone(status: &Status) -> Tone {
     if *status == Status::Locked { Tone::Locked } else { Tone::Reading }
@@ -43,6 +45,17 @@ fn describe(status: &Status) -> String {
         Status::Narrowing(n) => format!("{n} states still fit"),
         Status::Confirming(_) | Status::Locked => "Locked: waiting for a good moment".to_owned(),
     }
+}
+
+/// The last counts pressed, oldest first.
+fn recent_text(counts: &[u8]) -> String {
+    let shown = &counts[counts.len().saturating_sub(RECENT_PRESSES)..];
+    shown.iter().map(u8::to_string).collect::<Vec<_>>().join(" ")
+}
+
+/// How far off the moment to press can be for `window`, either way, in milliseconds.
+fn margin_ms(window: &Window) -> f64 {
+    (window.last_roll - window.first_roll + 1) as f64 / GAME_FPS / 2.0 * 1000.0
 }
 
 /// The start over key, for hearing it once there's a window to say if that fails.
@@ -95,7 +108,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let window_timing = timing.clone();
     let window_key = start_over_key.pressed.clone();
     let options = gui::Options {
-        source: "Manual: no video".to_owned(),
+        source: String::new(),
         sound: window_sound,
         timing: window_timing,
         hotkey_pressed: window_key,
@@ -125,23 +138,22 @@ fn read(
     sound: Arc<Sound>,
 ) {
     let started = Instant::now();
-    let log = Log { started, gui: Some(gui.clone()) };
+    // Only to the file: the window has no room for a log
+    let log = Log { started, gui: None };
     let key_gui = gui.clone();
     let key_name = start_over_key.name;
     hotkey::listen(start_over_key.code, start_over_key.pressed.clone(), move || {
         logfile::line(format_args!(
             "Couldn't use {key_name} to start over: another program has it. Try --start-over-key."
         ));
-        key_gui.add_log(format!("Another program has {key_name}."));
-        key_gui.add_log("Use the Start over button instead.".to_owned());
+        key_gui.set_warning(format!("Another program has {key_name}: use the button"));
         key_gui.set_start_over_key_off();
     });
     let start_over_key = start_over_key.pressed;
     let failed_gui = gui.clone();
     let count_keys = CountKeys::new(press_sender, move || {
         logfile::line("Couldn't use keys 3 and 4 from any program: another program has one. They work in this window.");
-        failed_gui.add_log("Another program has key 3 or 4.".to_owned());
-        failed_gui.add_log("They only work in this window.".to_owned());
+        failed_gui.set_warning("Another program has key 3 or 4: keep this window focused".to_owned());
         failed_gui.set_global_keys_off();
     });
     let global_keys = hotkey::load_count_keys_on();
@@ -162,7 +174,7 @@ fn read(
         (at_seconds, started + Duration::from_secs_f64(at_seconds.max(0.0)))
     };
     let mut status = Status::Collecting(0);
-    let mut last_count = 0;
+    let mut counts: Vec<u8> = Vec::new();
     // The moment to press of the running countdown, until it's gone by
     let mut cue_at: Option<Instant> = None;
 
@@ -176,6 +188,8 @@ fn read(
             status = Status::Collecting(0);
             cue_at = None;
             gui.clear_cue();
+            counts.clear();
+            gui.set_recent(String::new());
             gui.set_latest(String::new());
             gui.set_status(WAITING.to_owned(), Tone::Reading);
             log.line("Starting over.");
@@ -184,15 +198,18 @@ fn read(
             let at = at.saturating_duration_since(started).as_secs_f64();
             logfile::to_file(format_args!("press {count} {at:.3}"));
             if session.press(count, at) {
-                last_count = 7 - last_count;
-                gui.set_latest(format!("Flutter {}: now {last_count}", session.presses()));
+                if let Some(last) = counts.last_mut() {
+                    *last = 7 - *last;
+                    gui.set_latest(format!("Flutter {}: now {last}", session.presses()));
+                }
             } else {
-                last_count = count;
+                counts.push(count);
                 gui.set_latest(format!("Flutter {}: pressed {count}", session.presses()));
                 if session.presses() == 1 {
                     gui.set_status(describe(&Status::Collecting(1)), Tone::Reading);
                 }
             }
+            gui.set_recent(recent_text(&counts));
         }
 
         // Nothing here can see a dig, and it ends what's been read
@@ -225,12 +242,16 @@ fn read(
                 Event::Status(new) => {
                     status = new;
                     log.line(describe(&status));
+                    // For bug reports, since the window doesn't show them
+                    if let (Status::Locked, Some(top)) = (&status, readings_shown.top.first()) {
+                        let candidate = top.candidate;
+                        log.line(format_args!("Locked on {:06x}, Link {}", candidate.seed, candidate.link_first));
+                    }
                     gui.set_status(describe(&status), tone(&status));
                 }
                 Event::Cue { seconds: box_seconds, window } => {
                     let (at_seconds, at) = moment_to_press(box_seconds);
-                    let frames = window.last_roll - window.first_roll + 1;
-                    let margin = frames as f64 / GAME_FPS / 2.0 * 1000.0;
+                    let margin = margin_ms(&window);
                     log.line(format_args!("Press A at zero, in {:.1} s. +-{margin:.0} ms.", at_seconds - seconds));
                     logfile::to_file(format_args!("cue {at_seconds:.3}"));
                     cancel(&mut countdown);
@@ -238,9 +259,10 @@ fn read(
                     cue_at = Some(at);
                     gui.set_cue(Some(at));
                     gui.set_likely(None);
+                    gui.set_margin(margin);
                     gui.set_status("Locked: follow the countdown".to_owned(), Tone::Locked);
                 }
-                Event::LikelyCue { seconds: box_seconds, chance } => {
+                Event::LikelyCue { seconds: box_seconds, window, chance } => {
                     let (at_seconds, at) = moment_to_press(box_seconds);
                     let percent = shown_percent_of(chance);
                     log.line(format_args!("{percent}%: press A at zero, in {:.1} s.", at_seconds - seconds));
@@ -251,6 +273,7 @@ fn read(
                     cue_at = Some(at);
                     gui.set_cue(Some(at));
                     gui.set_likely(Some(percent));
+                    gui.set_margin(margin_ms(&window));
                     gui.set_status(format!("{percent}% chance"), Tone::Warning);
                 }
                 Event::LikelyChance { chance } => {
@@ -296,6 +319,13 @@ mod tests {
         for bad in ["inf", "-inf", "nan", "-1e300", "2001", "soon"] {
             assert_eq!(parse_lag(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn recent_presses_show_the_last_few_in_order() {
+        assert_eq!(recent_text(&[]), "");
+        assert_eq!(recent_text(&[3, 4]), "3 4");
+        assert_eq!(recent_text(&[3, 3, 4, 3, 4, 4, 3, 4]), "4 3 4 4 3 4");
     }
 
     #[test]

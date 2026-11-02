@@ -513,6 +513,7 @@ pub enum Event {
     /// Probably press A so the text box leaves at `seconds`: no state is proven yet.
     LikelyCue {
         seconds: f64,
+        window: Window,
         chance: f64,
     },
     /// The chance of the running likely cue changed.
@@ -752,7 +753,7 @@ impl ManualSession {
             }
             if let Some((window, chance)) = update_likely {
                 self.likely_cue = Some(window);
-                events.push(Event::LikelyCue { seconds: Self::window_seconds(&window), chance });
+                events.push(Event::LikelyCue { seconds: Self::window_seconds(&window), window, chance });
             }
         }
         if self.status != Status::Locked {

@@ -256,7 +256,28 @@ impl Gui {
     }
 
     pub fn set_latest(&self, latest: String) {
-        self.on_ui(move |window| window.set_latest(latest.into()));
+        self.on_ui(move |window| {
+            window.set_latest(latest.into());
+            window.set_latest_warning(false);
+        });
+    }
+
+    /// Says something's wrong, until the next thing to say.
+    pub fn set_warning(&self, warning: String) {
+        self.on_ui(move |window| {
+            window.set_latest(warning.into());
+            window.set_latest_warning(true);
+        });
+    }
+
+    /// Shows the last few counts pressed.
+    pub fn set_recent(&self, recent: String) {
+        self.on_ui(move |window| window.set_recent(recent.into()));
+    }
+
+    /// Shows how far off the moment to press can be, for the countdown that's running.
+    pub fn set_margin(&self, margin_ms: f64) {
+        self.on_ui(move |window| window.set_margin_text(format!("+-{margin_ms:.0} ms").into()));
     }
 
     pub fn add_log(&self, line: String) {
@@ -293,6 +314,7 @@ impl Gui {
     pub fn clear_cue(&self) {
         self.set_cue(None);
         self.set_likely(None);
+        self.on_ui(|window| window.set_margin_text(SharedString::new()));
     }
 
     /// When the countdown reaches zero, if one's running.
@@ -426,6 +448,7 @@ pub fn run(options: Options, read: impl FnOnce(Gui, Arc<AtomicBool>) + Send + 's
                 window.set_press(false);
                 window.set_likely(false);
                 window.set_likely_text(SharedString::new());
+                window.set_margin_text(SharedString::new());
             }
             return;
         };

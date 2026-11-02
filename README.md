@@ -18,7 +18,7 @@ This is a pre-release, tested on one Wii VC setup, so expect rough edges, and pl
 
 Download the zip for your system from the [releases page](https://github.com/TorjeAmundsen/dampe-calculator/releases), take
 `dampe.exe` or `dampe` from it, and run it. Nothing needs installing. Windows may warn about an unknown publisher, since the
-program isn't signed: choose More info, then Run anyway. In its window, choose N64 or Wii VC.
+program isn't signed: choose More info, then Run anyway. It starts on Wii VC: on N64, choose that under **Settings** in its window.
 
 ## Using it
 
@@ -42,7 +42,7 @@ Then:
 It takes about 14 flutters to be certain, which is 40 seconds or so, plus the wait for a good moment. You can stop pressing once
 it's locked. Telling 3 from 4 takes practice, and sloppy timing or counts mostly cost time.
 
-By default keys 3 and 4 work from any program, and other programs can't get them while it's on. Turn that off with the checkbox
+By default keys 3 and 4 work from any program, and other programs can't get them while it's on. Turn that off in Settings
 if you need to type them, and then they only work with the window focused. It stays how you left it.
 
 ### Green and amber
@@ -57,10 +57,9 @@ never cancels either.
 
 ### The list of candidates
 
-Above the instructions are the likeliest states of the RNG. The bar behind each is its chance of being the real one. Each shows
-its seed and the frame of Link's first blink, then how many of your presses it explains (hit), flutters you didn't press (miss)
-and presses it can't explain (stray). A card is gray until a state is locked, then green with both dots lit. The time on the
-right counts to the moment to press if that state is the real one, so you can go for one that hasn't become the main countdown
+Under the countdown are the 3 likeliest states of the RNG, once there are any. The bar behind each is its chance of being the real
+one. Each shows how many of your presses it explains (hit), flutters you didn't press (miss) and presses it can't explain (stray).
+A row is gray until a state is locked, then green. The time on the right counts to the moment to press if that state is the real one, so you can go for one that hasn't become the main countdown
 yet, at your own risk. "passed" means that moment has gone by, and "over 60 s" that none is coming within a minute.
 
 ### Timing
@@ -73,12 +72,12 @@ keep failing, `--lag-ms` changes the 330.
 
     dampe live [--platform n64|vc] [--lag-ms <ms>] [--start-over-key <F1-F24>]
 
-Running it with no options is `dampe live`. `--start-over-key` picks another key for Start over. Sound is off by default and set in the
-window. Settings are in `%APPDATA%\dampe-calculator`, or `~/.config/dampe-calculator` on Linux.
+Running it with no options is `dampe live`. `--start-over-key` picks another key for Start over. Sound is off by default and set under
+**Settings** in the window, with your platform. They're saved in `%APPDATA%\dampe-calculator`, or `~/.config/dampe-calculator` on Linux.
 
 ## Reporting problems
 
-The **Log** button shows `dampe.log` in the settings folder, and the run before it is `dampe.previous.log`. Please include it, and
+The **Log** button under **Settings** shows `dampe.log` in the settings folder, and the run before it is `dampe.previous.log`. Please include it, and
 say your platform and what each dig gave, especially the percentage shown for amber presses.
 
 ## The video build
