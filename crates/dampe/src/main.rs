@@ -34,7 +34,7 @@ use manuallive as live;
 #[cfg(not(feature = "video"))]
 const USAGE: &str = "usage:
   dampe                                          the same as dampe live
-  dampe live [--platform n64|vc] [--lag-ms <ms>] [--navi-key <F1-F24>]
+  dampe live [--platform n64|vc] [--lag-ms <ms>] [--start-over-key <F1-F24>]
                                                  press 3 and 4 for each flutter, and cue the A press";
 
 #[cfg(feature = "video")]
@@ -43,7 +43,7 @@ const USAGE: &str = "usage:
   dampe live [--device <name>] [--platform n64|vc] [--feed-delay-ms <ms>] [--no-window] [--no-sound] [--navi-key <F1-F24>]
                                                  read a device and cue the A press
        [--log-presses <file>]                    also log flutter presses: keys 3 and 4 with the window focused, pressing either again right away flips
-  dampe live --manual [--platform n64|vc] [--lag-ms <ms>] [--navi-key <F1-F24>]
+  dampe live --manual [--platform n64|vc] [--lag-ms <ms>] [--start-over-key <F1-F24>]
                                                  no video: press 3 and 4 for each flutter, with the window focused
   dampe press-stats <file>                       compare logged presses to the state that locked
   dampe press-replay <file>                      run the manual solver on logged presses, scored against that state

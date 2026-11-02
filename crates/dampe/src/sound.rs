@@ -146,7 +146,7 @@ mod tests {
     use super::*;
 
     fn peak(wav: &[u8]) -> i32 {
-        wav[44..].chunks_exact(2).map(|s| i32::from(i16::from_le_bytes([s[0], s[1]])).abs()).max().unwrap_or(0)
+        wav[44..].as_chunks::<2>().0.iter().map(|&s| i32::from(i16::from_le_bytes(s)).abs()).max().unwrap_or(0)
     }
 
     #[test]

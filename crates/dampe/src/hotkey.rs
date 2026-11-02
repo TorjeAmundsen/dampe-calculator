@@ -1,5 +1,5 @@
-//! A global hotkey for saying Navi has gone, since the game has the focus during a run, not this
-//! window. It only listens to the PC's keyboard, and nothing is ever sent to the game. On Linux the
+//! Global hotkeys for saying Navi has gone or starting over, and for the counts of flutters, since the
+//! game has the focus during a run, not this window. It only listens to the PC's keyboard, and nothing is ever sent to the game. On Linux the
 //! key only works with the window focused, since Wayland has no global hotkeys to register.
 
 use std::sync::Arc;

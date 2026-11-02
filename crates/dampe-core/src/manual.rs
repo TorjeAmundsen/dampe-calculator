@@ -350,8 +350,7 @@ impl ManualTracker {
         }
         self.followed.sort_unstable_by(|a, b| a.total_cost().total_cmp(&b.total_cost()));
         self.followed.truncate(MAX_FOLLOWED);
-        if !self.locked
-            && let Some(best) = self.followed.first()
+        if let Some(best) = self.followed.first()
             && best.score.pairs >= LOCK_PRESSES
             && self.top_state_share() >= LOCK_SHARE
         {

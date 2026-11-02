@@ -59,8 +59,9 @@ never cancels either.
 
 Above the instructions are the likeliest states of the RNG. The bar behind each is its chance of being the real one. Each shows
 its seed and the frame of Link's first blink, then how many of your presses it explains (hit), flutters you didn't press (miss)
-and presses it can't explain (stray). The time on the right counts to the moment to press if that state is the real one, so you can
-go for one that hasn't become the main countdown yet, at your own risk.
+and presses it can't explain (stray). A card is gray until a state is locked, then green with both dots lit. The time on the
+right counts to the moment to press if that state is the real one, so you can go for one that hasn't become the main countdown
+yet, at your own risk. "passed" means that moment has gone by, and "over 60 s" that none is coming within a minute.
 
 ### Timing
 
@@ -70,9 +71,9 @@ keep failing, `--lag-ms` changes the 330.
 
 ## Options
 
-    dampe live [--platform n64|vc] [--lag-ms <ms>] [--navi-key <F1-F24>]
+    dampe live [--platform n64|vc] [--lag-ms <ms>] [--start-over-key <F1-F24>]
 
-Running it with no options is `dampe live`. `--navi-key` picks another key for Start over. Sound is off by default and set in the
+Running it with no options is `dampe live`. `--start-over-key` picks another key for Start over. Sound is off by default and set in the
 window. Settings are in `%APPDATA%\dampe-calculator`, or `~/.config/dampe-calculator` on Linux.
 
 ## Reporting problems

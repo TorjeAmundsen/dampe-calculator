@@ -1,5 +1,6 @@
-//! The window, in Slint with its software renderer like AutoSplit-rs. It shows the feed in color and
-//! what the read sees on top. The read itself only uses brightness.
+//! The window, in Slint with its software renderer like AutoSplit-rs. With video it shows the feed in
+//! color and what the read sees on top, though the read itself only uses brightness. With presses,
+//! instructions take the feed's place.
 //!
 //! It's only for looking at: closing it ends the program, but a slow window never delays the read.
 //! While the last picture hasn't been shown yet, new ones are skipped.
@@ -221,15 +222,9 @@ impl Gui {
         });
     }
 
-    /// Shows the window for reading presses instead of video, with `count_keys` hearing about changes
-    /// to its setting for hearing them from any program, which starts as `global_keys`.
-    pub fn set_manual(&self, global_keys: bool, count_keys: impl Fn(bool) + Send + 'static) {
-        self.on_ui(move |window| {
-            window.set_manual(true);
-            window.set_global_keys(global_keys);
-            window.set_global_keys_available(hotkey::AVAILABLE);
-            window.on_global_keys_changed(move |on| count_keys(on));
-        });
+    /// Has `count_keys` hear about changes to the setting for hearing them from any program.
+    pub fn on_global_keys_changed(&self, count_keys: impl Fn(bool) + Send + 'static) {
+        self.on_ui(move |window| window.on_global_keys_changed(count_keys));
     }
 
     /// The keys couldn't be had from any program, so they're only heard in the window.
@@ -239,7 +234,7 @@ impl Gui {
 
     /// The start over key couldn't be had, so it isn't named on the button any more.
     pub fn set_start_over_key_off(&self) {
-        self.on_ui(|window| window.set_navi_key(SharedString::new()));
+        self.on_ui(|window| window.set_hotkey_name(SharedString::new()));
     }
 
     pub fn set_status(&self, status: String, tone: Tone) {
@@ -304,7 +299,6 @@ impl Gui {
     }
 }
 
-/// Opens the window, runs `read` on its own thread, and returns when the window closes.
 /// Shows the log in the file manager.
 #[cfg(windows)]
 fn open_log_folder(path: &std::path::Path) {
@@ -321,35 +315,43 @@ fn open_log_folder(path: &std::path::Path) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn chances_stay_readable_at_the_extremes() {
-        assert_eq!(percent(0.0), "0.0%");
-        assert_eq!(percent(0.00001), "<0.1%");
-        assert_eq!(percent(0.5), "50.0%");
-        assert_eq!(percent(0.99999), ">99.9%");
-    }
+/// How the window starts when it's reading presses, set before it first shows.
+pub struct ManualStart {
+    pub status: String,
+    pub global_keys: bool,
 }
 
-pub fn run(
-    device: String,
-    sound: Arc<Sound>,
-    timing: Arc<Timing>,
-    navi_gone: Arc<AtomicBool>,
-    navi_key: String,
-    presses: Option<Sender<(u8, Instant)>>,
-    read: impl FnOnce(Gui, Arc<AtomicBool>) + Send + 'static,
-) -> Result<(), String> {
+/// What the window needs to start.
+pub struct Options {
+    /// Where flutters come from, shown at the bottom.
+    pub source: String,
+    pub sound: Arc<Sound>,
+    pub timing: Arc<Timing>,
+    /// Set when the hotkey's button is clicked, or its key pressed in the window where there's no global
+    /// hotkey. It's Force start with video, and the same as Start over with presses.
+    pub hotkey_pressed: Arc<AtomicBool>,
+    pub hotkey_name: String,
+    /// Where presses of 3 and 4 in the window go, if anywhere.
+    pub presses: Option<Sender<(u8, Instant)>>,
+    pub manual: Option<ManualStart>,
+}
+
+/// Opens the window, runs `read` on its own thread, and returns when the window closes.
+pub fn run(options: Options, read: impl FnOnce(Gui, Arc<AtomicBool>) + Send + 'static) -> Result<(), String> {
+    let Options { source, sound, timing, hotkey_pressed, hotkey_name, presses, manual } = options;
     slint::BackendSelector::new()
         .backend_name("winit".into())
         .renderer_name("software".into())
         .select()
         .map_err(|e| e.to_string())?;
     let window = MainWindow::new().map_err(|e| e.to_string())?;
-    window.set_device(device.into());
+    window.set_source(source.into());
+    if let Some(start) = manual {
+        window.set_manual(true);
+        window.set_global_keys_available(hotkey::AVAILABLE);
+        window.set_global_keys(start.global_keys);
+        window.set_status(start.status.into());
+    }
     window.set_platform_index(i32::from(timing.platform() == Platform::WiiVc));
     window.set_timing(timing.describe().into());
     {
@@ -382,10 +384,10 @@ pub fn run(
     let flag = start_over.clone();
     window.on_start_over(move || flag.store(true, Ordering::Relaxed));
     if !hotkey::AVAILABLE {
-        window.set_navi_key_text(hotkey::window_key(&navi_key).map(String::from).unwrap_or_default().into());
+        window.set_hotkey_text(hotkey::window_key(&hotkey_name).map(String::from).unwrap_or_default().into());
     }
-    window.set_navi_key(navi_key.into());
-    window.on_navi_gone(move || navi_gone.store(true, Ordering::Relaxed));
+    window.set_hotkey_name(hotkey_name.into());
+    window.on_hotkey_pressed(move || hotkey_pressed.store(true, Ordering::Relaxed));
     if let Some(presses) = presses {
         window.on_flutter_pressed(move |count| {
             let _ = presses.send((count as u8, Instant::now()));
@@ -443,4 +445,17 @@ pub fn run(
         .map_err(|e| e.to_string())?;
 
     window.run().map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chances_stay_readable_at_the_extremes() {
+        assert_eq!(percent(0.0), "0.0%");
+        assert_eq!(percent(0.00001), "<0.1%");
+        assert_eq!(percent(0.5), "50.0%");
+        assert_eq!(percent(0.99999), ">99.9%");
+    }
 }

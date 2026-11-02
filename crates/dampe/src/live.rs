@@ -118,23 +118,24 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let window_sound = sound.clone();
     let window_timing = timing.clone();
     let window_navi_gone = navi_gone.clone();
-    gui::run(
-        description,
-        window_sound,
-        window_timing,
-        window_navi_gone,
-        navi_key,
-        press_sender,
-        move |gui, start_over| {
-            if let Err(error) = read(capture, &device, timing, Some(gui), start_over, navi_gone, sound, press_log) {
-                logfile::to_file(&error);
-                if !crate::show_error(&error) {
-                    eprintln!("{error}");
-                }
-                let _ = slint::quit_event_loop();
+    let options = gui::Options {
+        source: description,
+        sound: window_sound,
+        timing: window_timing,
+        hotkey_pressed: window_navi_gone,
+        hotkey_name: navi_key,
+        presses: press_sender,
+        manual: None,
+    };
+    gui::run(options, move |gui, start_over| {
+        if let Err(error) = read(capture, &device, timing, Some(gui), start_over, navi_gone, sound, press_log) {
+            logfile::to_file(&error);
+            if !crate::show_error(&error) {
+                eprintln!("{error}");
             }
-        },
-    )
+            let _ = slint::quit_event_loop();
+        }
+    })
 }
 
 /// Reads until the device fails.

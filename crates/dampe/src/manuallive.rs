@@ -66,7 +66,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--manual" => {}
-            "--navi-key" => key_name = args.next().ok_or("--navi-key needs a key")?.to_ascii_uppercase(),
+            // Its old name, from when it was only for Navi
+            "--start-over-key" | "--navi-key" => {
+                key_name = args.next().ok_or("--start-over-key needs a key")?.to_ascii_uppercase();
+            }
             "--platform" => {
                 let platform = args.next().and_then(|value| Platform::parse(value));
                 timing.set_platform(platform.ok_or("--platform needs n64 or vc")?);
@@ -83,7 +86,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     timing.use_manual_lag(lag);
     logfile::line(format_args!("Manual: no video. {}", timing.describe()));
 
-    let code = hotkey::parse_key(&key_name).ok_or("--navi-key needs a function key, F1 to F24")?;
+    let code = hotkey::parse_key(&key_name).ok_or("--start-over-key needs a function key, F1 to F24")?;
     let start_over_key = StartOverKey { code, name: key_name.clone(), pressed: Arc::new(AtomicBool::new(false)) };
 
     let (press_sender, presses) = channel();
@@ -91,15 +94,18 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let window_sound = sound.clone();
     let window_timing = timing.clone();
     let window_key = start_over_key.pressed.clone();
-    gui::run(
-        "Manual: no video".to_owned(),
-        window_sound,
-        window_timing,
-        window_key,
-        key_name,
-        Some(press_sender.clone()),
-        move |gui, start_over| read(presses, press_sender, timing, gui, start_over, start_over_key, sound),
-    )
+    let options = gui::Options {
+        source: "Manual: no video".to_owned(),
+        sound: window_sound,
+        timing: window_timing,
+        hotkey_pressed: window_key,
+        hotkey_name: key_name,
+        presses: Some(press_sender.clone()),
+        manual: Some(gui::ManualStart { status: WAITING.to_owned(), global_keys: hotkey::load_count_keys_on() }),
+    };
+    gui::run(options, move |gui, start_over| {
+        read(presses, press_sender, timing, gui, start_over, start_over_key, sound)
+    })
 }
 
 /// Stops a countdown, if one is running.
@@ -123,7 +129,9 @@ fn read(
     let key_gui = gui.clone();
     let key_name = start_over_key.name;
     hotkey::listen(start_over_key.code, start_over_key.pressed.clone(), move || {
-        logfile::line(format_args!("Couldn't use {key_name} to start over: another program has it. Try --navi-key."));
+        logfile::line(format_args!(
+            "Couldn't use {key_name} to start over: another program has it. Try --start-over-key."
+        ));
         key_gui.add_log(format!("Another program has {key_name}."));
         key_gui.add_log("Use the Start over button instead.".to_owned());
         key_gui.set_start_over_key_off();
@@ -138,11 +146,10 @@ fn read(
     });
     let global_keys = hotkey::load_count_keys_on();
     count_keys.set_on(global_keys);
-    gui.set_manual(global_keys, move |on| {
+    gui.on_global_keys_changed(move |on| {
         hotkey::save_count_keys_on(on);
         count_keys.set_on(on);
     });
-    gui.set_status(WAITING.to_owned(), Tone::Reading);
     let mut session = ManualSession::new();
     let mut events = Vec::new();
     let mut countdown: Option<Sender<()>> = None;

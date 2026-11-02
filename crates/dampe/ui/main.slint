@@ -237,7 +237,7 @@ export component MainWindow inherits Window {
     in property <string> status: "Talk to Dampe: reading starts by itself at his first text box";
     in property <color> status-color: white;
     in property <string> latest;
-    in property <string> device;
+    in property <string> source;
     in property <string> countdown;
     // How close the long beep is: 0 is far away, 1 is now
     in property <float> countdown-share;
@@ -267,11 +267,11 @@ export component MainWindow inherits Window {
     // The list always gets at least this much, for a window that's wide but not tall
     property <length> least-readings: 170px;
     // The key as the window sees it, where it has to listen itself instead of a global hotkey
-    in property <string> navi-key-text;
+    in property <string> hotkey-text;
 
-    in property <string> navi-key;
+    in property <string> hotkey-name;
     callback start-over();
-    callback navi-gone();
+    callback hotkey-pressed();
     callback flutter-pressed(int);
     callback global-keys-changed(bool);
     callback open-log();
@@ -291,8 +291,8 @@ export component MainWindow inherits Window {
         }
 
         key-pressed(event) => {
-            if (root.navi-key-text != "" && event.text == root.navi-key-text) {
-                root.navi-gone();
+            if (root.hotkey-text != "" && event.text == root.hotkey-text) {
+                root.hotkey-pressed();
                 return accept;
             }
             if (!event.repeat && event.text == "3") {
@@ -582,15 +582,15 @@ export component MainWindow inherits Window {
 
                     if !root.manual: Button {
                         horizontal-stretch: 1;
-                        text: "Force start (" + root.navi-key + ")";
+                        text: "Force start (" + root.hotkey-name + ")";
                         clicked => {
-                            root.navi-gone();
+                            root.hotkey-pressed();
                         }
                     }
 
                     Button {
                         horizontal-stretch: 1;
-                        text: root.manual && root.navi-key != "" ? "Start over (" + root.navi-key + ")" : "Start over";
+                        text: root.manual && root.hotkey-name != "" ? "Start over (" + root.hotkey-name + ")" : "Start over";
                         clicked => {
                             root.start-over();
                         }
@@ -613,7 +613,7 @@ export component MainWindow inherits Window {
 
                 Text {
                     height: 14px;
-                    text: root.device;
+                    text: root.source;
                     color: Colors.secondary;
                     font-size: 11px;
                     overflow: elide;
