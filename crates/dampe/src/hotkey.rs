@@ -67,6 +67,28 @@ pub struct CountKeys {
     thread: u32,
 }
 
+/// Whether the number keys are heard from any program, from what's saved. On unless turned off.
+fn count_keys_on(text: &str) -> bool {
+    !text.lines().any(|line| line.trim() == "count_keys=off")
+}
+
+fn count_keys_path() -> Option<std::path::PathBuf> {
+    Some(crate::config_dir()?.join("keys.txt"))
+}
+
+/// Whether the number keys were left on, last time they were changed.
+pub fn load_count_keys_on() -> bool {
+    count_keys_on(&count_keys_path().and_then(|path| std::fs::read_to_string(path).ok()).unwrap_or_default())
+}
+
+pub fn save_count_keys_on(on: bool) {
+    let Some(path) = count_keys_path() else { return };
+    if let Some(folder) = path.parent() {
+        let _ = std::fs::create_dir_all(folder);
+    }
+    let _ = std::fs::write(path, format!("count_keys={}\n", if on { "on" } else { "off" }));
+}
+
 /// The counts, and their keys' codes, which are their characters.
 #[cfg(windows)]
 const COUNT_KEYS: [(u8, u32); 2] = [(3, 0x33), (4, 0x34)];
@@ -138,6 +160,13 @@ mod tests {
         assert_eq!(window_key("F8"), Some(char::from(slint::platform::Key::F8)));
         assert_eq!(window_key("F24"), Some(char::from(slint::platform::Key::F24)));
         assert_eq!(window_key("F25"), None);
+    }
+
+    #[test]
+    fn the_number_keys_stay_off_only_when_saved_off() {
+        assert!(count_keys_on(""));
+        assert!(count_keys_on("count_keys=on\n"));
+        assert!(!count_keys_on("count_keys=off\n"));
     }
 
     #[test]

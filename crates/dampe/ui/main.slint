@@ -545,7 +545,7 @@ export component MainWindow inherits Window {
                 }
 
                 if root.manual && root.global-keys-available: CheckBox {
-                    text: "Keys 3 and 4 work from any program";
+                    text: "Take keys 3 and 4 from all programs";
                     checked <=> root.global-keys;
                     toggled => {
                         root.global-keys-changed(self.checked);
@@ -590,7 +590,7 @@ export component MainWindow inherits Window {
 
                     Button {
                         horizontal-stretch: 1;
-                        text: root.manual ? "Start over (" + root.navi-key + ")" : "Start over";
+                        text: root.manual && root.navi-key != "" ? "Start over (" + root.navi-key + ")" : "Start over";
                         clicked => {
                             root.start-over();
                         }

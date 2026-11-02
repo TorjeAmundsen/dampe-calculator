@@ -221,11 +221,12 @@ impl Gui {
         });
     }
 
-    /// Shows the window for reading presses instead of video, with `count_keys` hearing about its
-    /// setting for hearing them from any program.
-    pub fn set_manual(&self, count_keys: impl Fn(bool) + Send + 'static) {
+    /// Shows the window for reading presses instead of video, with `count_keys` hearing about changes
+    /// to its setting for hearing them from any program, which starts as `global_keys`.
+    pub fn set_manual(&self, global_keys: bool, count_keys: impl Fn(bool) + Send + 'static) {
         self.on_ui(move |window| {
             window.set_manual(true);
+            window.set_global_keys(global_keys);
             window.set_global_keys_available(hotkey::AVAILABLE);
             window.on_global_keys_changed(move |on| count_keys(on));
         });
@@ -234,6 +235,11 @@ impl Gui {
     /// The keys couldn't be had from any program, so they're only heard in the window.
     pub fn set_global_keys_off(&self) {
         self.on_ui(|window| window.set_global_keys(false));
+    }
+
+    /// The start over key couldn't be had, so it isn't named on the button any more.
+    pub fn set_start_over_key_off(&self) {
+        self.on_ui(|window| window.set_navi_key(SharedString::new()));
     }
 
     pub fn set_status(&self, status: String, tone: Tone) {

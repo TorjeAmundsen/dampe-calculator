@@ -43,7 +43,7 @@ It takes about 14 flutters to be certain, which is 40 seconds or so, plus the wa
 it's locked. Telling 3 from 4 takes practice, and sloppy timing or counts mostly cost time.
 
 By default keys 3 and 4 work from any program, and other programs can't get them while it's on. Turn that off with the checkbox
-if you need to type them, and then they only work with the window focused.
+if you need to type them, and then they only work with the window focused. It stays how you left it.
 
 ### Green and amber
 

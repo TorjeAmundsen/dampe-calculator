@@ -22,6 +22,9 @@ const TICK: Duration = Duration::from_millis(20);
 /// How often the times in the list of readings count down. Fast enough to press by.
 const READINGS_REFRESH: Duration = Duration::from_millis(100);
 
+/// What `--lag-ms` takes: earlier than the flutter's end is possible, by someone anticipating it.
+const LAG_RANGE_MS: std::ops::RangeInclusive<f64> = -500.0..=2000.0;
+
 const WAITING: &str = "Talk to Dampe, and start pressing once Navi is done";
 
 fn tone(status: &Status) -> Tone {
@@ -35,6 +38,18 @@ fn describe(status: &Status) -> String {
         Status::Narrowing(n) => format!("{n} states still fit"),
         Status::Confirming(_) | Status::Locked => "Locked: waiting for a good moment".to_owned(),
     }
+}
+
+/// The start over key, for hearing it once there's a window to say if that fails.
+struct StartOverKey {
+    code: u32,
+    name: String,
+    pressed: Arc<AtomicBool>,
+}
+
+/// A lag worth using. Text like `inf` also parses as a number, and no time could be worked out from it.
+fn parse_lag(text: &str) -> Option<f64> {
+    text.parse().ok().filter(|lag| LAG_RANGE_MS.contains(lag))
 }
 
 pub fn run(args: &[String]) -> Result<(), String> {
@@ -51,28 +66,26 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 let platform = args.next().and_then(|value| Platform::parse(value));
                 timing.set_platform(platform.ok_or("--platform needs n64 or vc")?);
             }
-            "--lag-ms" => lag = args.next().and_then(|value| value.parse().ok()).ok_or("--lag-ms needs a number")?,
-            other => return Err(format!("{other} doesn't go with --manual")),
+            "--lag-ms" => {
+                lag = args
+                    .next()
+                    .and_then(|value| parse_lag(value))
+                    .ok_or("--lag-ms needs a number of milliseconds, from -500 to 2000")?;
+            }
+            other => return Err(format!("Unknown option {other}\n\n{}", crate::USAGE)),
         }
     }
     timing.use_manual_lag(lag);
     logfile::line(format_args!("Manual: no video. {}", timing.describe()));
 
-    let key = hotkey::parse_key(&key_name).ok_or("--navi-key needs a function key, F1 to F24")?;
-    let start_over_key = Arc::new(AtomicBool::new(false));
-    let failed_key = key_name.clone();
-    hotkey::listen(key, start_over_key.clone(), move || {
-        let error = format!("Couldn't use {failed_key} to start over: another program has it. Try --navi-key.");
-        logfile::line(&error);
-        crate::show_error(&error);
-    });
+    let code = hotkey::parse_key(&key_name).ok_or("--navi-key needs a function key, F1 to F24")?;
+    let start_over_key = StartOverKey { code, name: key_name.clone(), pressed: Arc::new(AtomicBool::new(false)) };
 
     let (press_sender, presses) = channel();
     let sound = Arc::new(Sound::load());
     let window_sound = sound.clone();
     let window_timing = timing.clone();
-    let window_key = start_over_key.clone();
-    let key_for_read = key_name.clone();
+    let window_key = start_over_key.pressed.clone();
     gui::run(
         "Manual: no video".to_owned(),
         window_sound,
@@ -80,9 +93,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         window_key,
         key_name,
         Some(press_sender.clone()),
-        move |gui, start_over| {
-            read(presses, press_sender, timing, gui, start_over, start_over_key, sound, key_for_read)
-        },
+        move |gui, start_over| read(presses, press_sender, timing, gui, start_over, start_over_key, sound),
     )
 }
 
@@ -93,19 +104,26 @@ fn cancel(countdown: &mut Option<Sender<()>>) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn read(
     presses: Receiver<(u8, Instant)>,
     press_sender: Sender<(u8, Instant)>,
     timing: Arc<Timing>,
     gui: Gui,
     start_over: Arc<AtomicBool>,
-    start_over_key: Arc<AtomicBool>,
+    start_over_key: StartOverKey,
     sound: Arc<Sound>,
-    start_over_key_name: String,
 ) {
     let started = Instant::now();
     let log = Log { started, gui: Some(gui.clone()) };
+    let key_gui = gui.clone();
+    let key_name = start_over_key.name;
+    hotkey::listen(start_over_key.code, start_over_key.pressed.clone(), move || {
+        logfile::line(format_args!("Couldn't use {key_name} to start over: another program has it. Try --navi-key."));
+        key_gui.add_log(format!("Another program has {key_name}."));
+        key_gui.add_log("Use the Start over button instead.".to_owned());
+        key_gui.set_start_over_key_off();
+    });
+    let start_over_key = start_over_key.pressed;
     let failed_gui = gui.clone();
     let count_keys = CountKeys::new(press_sender, move || {
         logfile::line("Couldn't use keys 3 and 4 from any program: another program has one. They work in this window.");
@@ -113,8 +131,12 @@ fn read(
         failed_gui.add_log("They only work in this window.".to_owned());
         failed_gui.set_global_keys_off();
     });
-    count_keys.set_on(true);
-    gui.set_manual(move |on| count_keys.set_on(on));
+    let global_keys = hotkey::load_count_keys_on();
+    count_keys.set_on(global_keys);
+    gui.set_manual(global_keys, move |on| {
+        hotkey::save_count_keys_on(on);
+        count_keys.set_on(on);
+    });
     gui.set_status(WAITING.to_owned(), Tone::Reading);
     let mut session = ManualSession::new();
     let mut events = Vec::new();
@@ -160,7 +182,7 @@ fn read(
         // Nothing here can see a dig, and it ends what's been read
         if cue_at.is_some_and(|at| at <= Instant::now()) {
             cue_at = None;
-            gui.set_latest(format!("Dug? Start over ({start_over_key_name}) before talking again"));
+            gui.set_latest("Dug? Start over before talking again".to_owned());
             if status == Status::Locked {
                 gui.set_status(describe(&status), tone(&status));
             }
@@ -254,6 +276,15 @@ fn read(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lag_has_to_be_a_time_that_can_be_worked_with() {
+        assert_eq!(parse_lag("250"), Some(250.0));
+        assert_eq!(parse_lag("-100"), Some(-100.0));
+        for bad in ["inf", "-inf", "nan", "-1e300", "2001", "soon"] {
+            assert_eq!(parse_lag(bad), None, "{bad}");
+        }
+    }
 
     #[test]
     fn one_flutter_is_not_flutters() {
