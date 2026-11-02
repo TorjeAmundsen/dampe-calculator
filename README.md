@@ -96,8 +96,8 @@ countdown comes out. The rest of this section is about that build.
 
 ### Setup
 
-1. Download the zip for your system from the [releases page](https://github.com/TorjeAmundsen/dampe-calculator/releases), and take `dampe.exe` or `dampe` from it. Nothing needs installing. Windows may warn about an unknown publisher,
-   since the program isn't signed: choose More info, then Run anyway.
+1. Releases don't include this build, so build it yourself, which needs Rust: `cargo build --release --features video` puts
+   `dampe.exe` or `dampe` in `target/release`.
 2. In OBS, open Configure Virtual Camera next to Start Virtual Camera, and set it to the source with your game on it, so
    your stream layout isn't included.
 3. Click **Start Virtual Camera**. Do this before starting the program.
