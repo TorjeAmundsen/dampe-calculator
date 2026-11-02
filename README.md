@@ -16,7 +16,10 @@ This is a pre-release, tested on one Wii VC setup, so expect rough edges, and pl
 
 ## Setup
 
-Download the zip for your system from the [releases page](https://github.com/TorjeAmundsen/dampe-calculator/releases), take
+The quickest way is [in your browser](https://torjeamundsen.github.io/dampe-calculator/), with nothing to download. There, keys 3
+and 4 only work with its tab focused, so use the program below if you need them while another program has focus.
+
+Otherwise, download the zip for your system from the [releases page](https://github.com/TorjeAmundsen/dampe-calculator/releases), take
 `dampe.exe` or `dampe` from it, and run it. Nothing needs installing. Windows may warn about an unknown publisher, since the
 program isn't signed: choose More info, then Run anyway. It starts on Wii VC: on N64, choose that under **Settings** in its window.
 

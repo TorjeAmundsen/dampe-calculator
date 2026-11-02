@@ -285,6 +285,20 @@ fn scan_seeds(from: u32, to: u32, presses: &[Press], now: f64) -> Vec<Followed> 
     found
 }
 
+/// A part of [`scan`]: the readings among seeds `from..to`, as seed and Link phase, to be put together
+/// again with [`readings_from_scan`]. A page can give each part to a worker of its own.
+pub fn scan_part(from: u32, to: u32, presses: &[Press], now: f64) -> Vec<(u32, i64)> {
+    scan_seeds(from, to, presses, now).into_iter().map(|found| (found.seed, found.link_first)).collect()
+}
+
+/// The readings [`scan_part`] found.
+pub fn readings_from_scan(found: &[(u32, i64)], presses: &[Press], now: f64) -> Vec<Followed> {
+    let scored = found.iter().filter_map(|&(seed, link_first)| {
+        compare(seed, link_first, presses, now).map(|score| Followed { seed, link_first, score })
+    });
+    scored.collect()
+}
+
 /// Every reading whose first flutter is `presses[0]`.
 pub fn scan(presses: &[Press], now: f64) -> Vec<Followed> {
     scan_all_states(|from, to| scan_seeds(from, to, presses, now))
@@ -332,11 +346,18 @@ impl ManualTracker {
 
     /// Judges the presses so far, as of `now` in press frames.
     pub fn update(&mut self, now: f64) {
+        let found = self.begin_update(now).map(|presses| scan(&presses, now));
+        self.finish_update(now, found);
+    }
+
+    /// The first part of [`Self::update`]. If it returns presses, they have to be scanned, and what's
+    /// found goes to [`Self::finish_update`], however long that takes.
+    fn begin_update(&mut self, now: f64) -> Option<Vec<Press>> {
         self.now = now;
         if self.locked {
             self.check_lock();
             if self.locked {
-                return;
+                return None;
             }
         }
         let presses = &self.presses[self.anchor.min(self.presses.len())..];
@@ -347,8 +368,15 @@ impl ManualTracker {
             }
             None => false,
         });
-        if self.followed.is_empty() {
-            self.scan(now);
+        if self.followed.is_empty() { self.scan_due() } else { None }
+    }
+
+    fn finish_update(&mut self, now: f64, found: Option<Vec<Followed>>) {
+        if self.locked {
+            return;
+        }
+        if let Some(found) = found {
+            self.followed = found;
         }
         self.followed.sort_unstable_by(|a, b| a.total_cost().total_cmp(&b.total_cost()));
         self.followed.truncate(MAX_FOLLOWED);
@@ -382,15 +410,16 @@ impl ManualTracker {
         }
     }
 
-    /// Scans from recent presses, if it's time. Older ones have more of what went wrong behind them.
-    fn scan(&mut self, now: f64) {
+    /// The presses to scan from, if it's time: recent ones, since older ones have more of what went wrong
+    /// behind them.
+    fn scan_due(&mut self) -> Option<Vec<Press>> {
         let due = self.presses_at_scan.is_none_or(|at| self.presses.len() >= at + PRESSES_BETWEEN_SCANS);
         if self.presses.len() < SCAN_PRESSES || !due {
-            return;
+            return None;
         }
         self.anchor = self.presses.len() - SCAN_PRESSES;
         self.presses_at_scan = Some(self.presses.len());
-        self.followed = scan(&self.presses[self.anchor..], now);
+        Some(self.presses[self.anchor..].to_vec())
     }
 
     pub fn followed(&self) -> &[Followed] {
@@ -553,78 +582,138 @@ fn still_ahead(window: &Window, now: f64) -> bool {
     window.box_gone().1 as f64 >= now
 }
 
-/// Scans can take seconds, and the window's clock doesn't wait.
-fn search_thread(work: Receiver<Work>, updates: Sender<Update>, extra_lead: i64) {
-    let mut tracker = ManualTracker::new();
-    let mut likely: Option<Window> = None;
-    let mut generation = 0;
-    while let Ok(job) = work.recv() {
-        let mut jobs = vec![job];
-        jobs.extend(work.try_iter());
+/// Presses to scan from, as of press frame `now`.
+pub struct ScanRequest {
+    pub presses: Vec<Press>,
+    pub now: f64,
+}
+
+/// Judges presses as work comes in. Scans can take seconds, and the window's clock doesn't wait, so this
+/// doesn't run where the window does.
+struct Search {
+    tracker: ManualTracker,
+    likely: Option<Window>,
+    generation: u64,
+    extra_lead: i64,
+    /// The press frame being judged, and the clock before that.
+    judging: Option<(f64, f64)>,
+}
+
+impl Search {
+    fn new(extra_lead: i64) -> Self {
+        Self { tracker: ManualTracker::new(), likely: None, generation: 0, extra_lead, judging: None }
+    }
+
+    /// Takes in `jobs`. Presses to scan come back if that's needed before [`Self::finish`].
+    fn begin(&mut self, jobs: impl Iterator<Item = Work>) -> Option<ScanRequest> {
         let mut pressed = None;
         for job in jobs {
             match job {
                 Work::Reset(new) => {
-                    tracker = ManualTracker::new();
-                    likely = None;
-                    generation = new;
+                    self.tracker = ManualTracker::new();
+                    self.likely = None;
+                    self.generation = new;
                     pressed = None;
                 }
                 Work::Press(press) => {
-                    tracker.add(press);
+                    self.tracker.add(press);
                     pressed = Some(press.frame);
                 }
                 Work::Flip(now) => {
-                    tracker.flip_last();
+                    self.tracker.flip_last();
                     pressed = Some(now);
                 }
-                Work::Tick(now) => tracker.set_now(now),
+                Work::Tick(now) => self.tracker.set_now(now),
             }
         }
-        if let Some(now) = pressed {
-            let before = tracker.now;
-            let started = std::time::Instant::now();
-            tracker.update(now);
-            tracker.set_now(before.max(now + started.elapsed().as_secs_f64() * GAME_FPS));
+        let now = pressed?;
+        self.judging = Some((now, self.tracker.now));
+        self.tracker.begin_update(now).map(|presses| ScanRequest { presses, now })
+    }
+
+    /// Finishes judging, with what a scan found if one was asked for, `seconds` after [`Self::begin`].
+    fn finish(&mut self, found: Option<Vec<Followed>>, seconds: f64) -> Update {
+        if let Some((now, before)) = self.judging.take() {
+            self.tracker.finish_update(now, found);
+            self.tracker.set_now(before.max(now + seconds * GAME_FPS));
         }
-        let now = tracker.now;
-        let locked = tracker.status() == Status::Locked;
-        likely = likely.filter(|window| {
+        let now = self.tracker.now;
+        let locked = self.tracker.status() == Status::Locked;
+        self.likely = self.likely.filter(|window| {
             let target = window.target();
             let around = Window { first_roll: target - LIKELY_TARGET_FRAMES, last_roll: target + LIKELY_TARGET_FRAMES };
-            still_ahead(window, now) && tracker.window_chance(around) >= LIKELY_MIN_CONFIDENCE
+            still_ahead(window, now) && self.tracker.window_chance(around) >= LIKELY_MIN_CONFIDENCE
         });
-        let proven = likely.filter(|&window| locked && tracker.window_chance(window) >= CERTAIN);
+        let proven = self.likely.filter(|&window| locked && self.tracker.window_chance(window) >= CERTAIN);
         if proven.is_some() {
-            likely = None;
+            self.likely = None;
         }
         let window = proven.or_else(|| {
-            (locked && likely.is_none())
-                .then(|| tracker.next_window(now as i64 + CUE_LEAD_FRAMES + extra_lead, MIN_WINDOW_FRAMES))
+            (locked && self.likely.is_none())
+                .then(|| self.tracker.next_window(now as i64 + CUE_LEAD_FRAMES + self.extra_lead, MIN_WINDOW_FRAMES))
                 .flatten()
         });
-        let mut likely_update = likely.map(|window| {
+        let mut likely_update = self.likely.map(|window| {
             let target = window.target();
-            (window, tracker.chances(target..target + 1)[0])
+            (window, self.tracker.chances(target..target + 1)[0])
         });
-        if likely.is_none() && window.is_none() {
-            likely_update = tracker.likely_window(
-                now as i64 + LIKELY_LEAD_FRAMES + extra_lead,
+        if self.likely.is_none() && window.is_none() {
+            likely_update = self.tracker.likely_window(
+                now as i64 + LIKELY_LEAD_FRAMES + self.extra_lead,
                 MIN_WINDOW_FRAMES,
                 LIKELY_MIN_CONFIDENCE,
             );
-            likely = likely_update.map(|(window, _)| window);
+            self.likely = likely_update.map(|(window, _)| window);
         }
-        let update = Update {
-            generation,
-            status: tracker.status(),
-            readings: tracker.readings(SHOWN_READINGS),
+        Update {
+            generation: self.generation,
+            status: self.tracker.status(),
+            readings: self.tracker.readings(SHOWN_READINGS),
             window,
             likely: likely_update,
-        };
-        if updates.send(update).is_err() {
+        }
+    }
+}
+
+/// Runs a search on a thread of its own.
+#[cfg(not(target_arch = "wasm32"))]
+fn search_thread(work: Receiver<Work>, updates: Sender<Update>, extra_lead: i64) {
+    let mut search = Search::new(extra_lead);
+    while let Ok(job) = work.recv() {
+        let started = std::time::Instant::now();
+        let jobs = std::iter::once(job).chain(work.try_iter());
+        let found = search.begin(jobs).map(|request| scan(&request.presses, request.now));
+        if updates.send(search.finish(found, started.elapsed().as_secs_f64())).is_err() {
             return;
         }
+    }
+}
+
+/// The search of a session with no thread for it, as in a browser, for the caller to run.
+pub struct ManualSearch {
+    search: Search,
+    work: Receiver<Work>,
+    updates: Sender<Update>,
+}
+
+impl ManualSearch {
+    /// Takes in new work, if any. If presses come back, they have to be scanned and go to
+    /// [`Self::finish_scan`]. If not, that's all there is to do.
+    pub fn step(&mut self) -> Option<ScanRequest> {
+        let jobs: Vec<Work> = self.work.try_iter().collect();
+        if jobs.is_empty() {
+            return None;
+        }
+        let request = self.search.begin(jobs.into_iter());
+        if request.is_none() {
+            let _ = self.updates.send(self.search.finish(None, 0.0));
+        }
+        request
+    }
+
+    /// What a scan found, `seconds` after [`Self::step`] asked for it.
+    pub fn finish_scan(&mut self, found: Vec<Followed>, seconds: f64) {
+        let _ = self.updates.send(self.search.finish(Some(found), seconds));
     }
 }
 
@@ -647,6 +736,7 @@ pub struct ManualSession {
 
 impl ManualSession {
     /// `press_lead_seconds` is how long before the box should leave a press has to come.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(press_lead_seconds: f64) -> Self {
         let extra_lead = extra_lead_frames(press_lead_seconds);
         let (work, work_receiver) = channel();
@@ -655,6 +745,18 @@ impl ManualSession {
             .name("search".into())
             .spawn(move || search_thread(work_receiver, update_sender, extra_lead))
             .expect("couldn't start the search thread");
+        Self::with_channels(work, updates)
+    }
+
+    /// A session whose search is up to the caller to run.
+    pub fn without_thread(press_lead_seconds: f64) -> (Self, ManualSearch) {
+        let (work, work_receiver) = channel();
+        let (update_sender, updates) = channel();
+        let search = Search::new(extra_lead_frames(press_lead_seconds));
+        (Self::with_channels(work, updates), ManualSearch { search, work: work_receiver, updates: update_sender })
+    }
+
+    fn with_channels(work: Sender<Work>, updates: Receiver<Update>) -> Self {
         Self {
             work,
             updates,
@@ -774,7 +876,7 @@ impl ManualSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rng::{StateWalk, rolls_heart_piece};
+    use crate::rng::{STATES, StateWalk, rolls_heart_piece};
 
     /// Presses exactly `late` frames after each flutter's end, with the right counts.
     fn exact(seed: u32, link: i64, n: usize, late: f64) -> Vec<Press> {
@@ -1038,6 +1140,42 @@ mod tests {
             let press = ManualSession::window_seconds(&window) - (DEFAULT_LAG_MS + 150.0) / 1000.0;
             assert!(press >= 3.0, "{press} s with a lead of {lead}");
         }
+    }
+
+    /// A scan in parts has to find what one scan does, with the same scores.
+    #[test]
+    fn a_scan_in_parts_finds_what_one_scan_does() {
+        let presses = exact(3_141_592, 40, SCAN_PRESSES, 5.0);
+        let now = presses[SCAN_PRESSES - 1].frame;
+        let (from, middle, to) = (3_100_000, 3_141_000, 3_180_000);
+        let whole = scan_seeds(from, to, &presses, now);
+        let mut parts = scan_part(from, middle, &presses, now);
+        parts.extend(scan_part(middle, to, &presses, now));
+        assert!(whole.iter().any(|found| found.seed == 3_141_592 && found.link_first == 40), "the control");
+        assert_eq!(readings_from_scan(&parts, &presses, now), whole);
+    }
+
+    /// The same read with no thread, with the scan done by the caller, has to come to the same cue.
+    #[test]
+    fn a_session_without_a_thread_cues_like_one_with_one() {
+        let presses = exact(3_141_592, 40, 20, 6.0);
+        let (mut session, mut search) = ManualSession::without_thread(TYPICAL_PRESS_LEAD_SECONDS);
+        let mut events = Vec::new();
+        for press in &presses {
+            let seconds = press.frame / GAME_FPS;
+            session.press(press.count, seconds);
+            if let Some(request) = search.step() {
+                let found = scan_part(0, STATES, &request.presses, request.now);
+                search.finish_scan(readings_from_scan(&found, &request.presses, request.now), 0.0);
+            }
+            session.tick(seconds, &mut events);
+        }
+        let window = events.iter().find_map(|event| match event {
+            Event::Cue { window, .. } => Some(*window),
+            _ => None,
+        });
+        let mut walk = StateWalk::new(Blinks::new(3_141_592, 40));
+        assert!(rolls_heart_piece(walk.state_for_roll(window.expect("no cue").target() - 6)));
     }
 
     /// A long lag means pressing long before the box leaves, which the countdown still has to fit.

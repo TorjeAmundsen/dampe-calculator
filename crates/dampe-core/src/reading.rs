@@ -116,6 +116,7 @@ pub(crate) fn first_window(candidates: &[Candidate], from: i64, min_frames: i64,
 
 /// Runs `scan` over every state, split up between half of the cores, since the read has to run beside
 /// OBS, and puts together what it finds.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn scan_all_states<T: Send>(scan: impl Fn(u32, u32) -> Vec<T> + Sync) -> Vec<T> {
     let threads = (std::thread::available_parallelism().map_or(4, |n| n.get()) as u32 / 2).max(1);
     let chunk = STATES.div_ceil(threads);
@@ -129,6 +130,12 @@ pub(crate) fn scan_all_states<T: Send>(scan: impl Fn(u32, u32) -> Vec<T> + Sync)
             .collect();
         workers.into_iter().flat_map(|worker| worker.join().expect("a scan thread panicked")).collect()
     })
+}
+
+/// In a browser there's only this thread: a page splits the work between workers if it wants to.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn scan_all_states<T: Send>(scan: impl Fn(u32, u32) -> Vec<T> + Sync) -> Vec<T> {
+    scan(0, STATES)
 }
 
 /// The chance of a dig on each of `frames` giving the Heart Piece, from readings and their shares.

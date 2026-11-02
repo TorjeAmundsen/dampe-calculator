@@ -1,0 +1,50 @@
+# Publishes the web page to GitHub Pages when a release is published, pre-releases included.
+#
+# Needs Pages set to deploy from GitHub Actions, and the github-pages environment has to allow tags,
+# since a release runs from its tag. Can also be started by hand from the Actions tab.
+
+name: Publish the web page
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# A newer release takes over from one still going
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the solver
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+          cargo build -p dampe-web --profile dist --target wasm32-unknown-unknown --locked
+
+      - name: Put the page together
+        run: |
+          mkdir site
+          cp web/index.html web/app.js web/search.js web/scan.js site/
+          cp target/wasm32-unknown-unknown/dist/dampe_web.wasm site/
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v5

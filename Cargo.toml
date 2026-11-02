@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/dampe-core", "crates/dampe"]
+members = ["crates/dampe-core", "crates/dampe", "crates/dampe-web"]
 
 [workspace.package]
 version = "0.1.0-pre.1"

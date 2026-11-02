@@ -763,6 +763,13 @@ name = "dampe-core"
 version = "0.1.0-pre.1"
 
 [[package]]
+name = "dampe-web"
+version = "0.1.0-pre.1"
+dependencies = [
+ "dampe-core",
+]
+
+[[package]]
 name = "data-url"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
