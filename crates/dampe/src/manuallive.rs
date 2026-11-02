@@ -30,9 +30,10 @@ fn tone(status: &Status) -> Tone {
 
 fn describe(status: &Status) -> String {
     match status {
+        Status::Collecting(1) => "1 flutter so far".to_owned(),
         Status::Collecting(n) => format!("{n} flutters so far"),
         Status::Narrowing(n) => format!("{n} states still fit"),
-        Status::Confirming(_) | Status::Locked => "Locked: follow the countdown".to_owned(),
+        Status::Confirming(_) | Status::Locked => "Locked: waiting for a good moment".to_owned(),
     }
 }
 
@@ -71,6 +72,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let window_sound = sound.clone();
     let window_timing = timing.clone();
     let window_key = start_over_key.clone();
+    let key_for_read = key_name.clone();
     gui::run(
         "Manual: no video".to_owned(),
         window_sound,
@@ -78,7 +80,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
         window_key,
         key_name,
         Some(press_sender.clone()),
-        move |gui, start_over| read(presses, press_sender, timing, gui, start_over, start_over_key, sound),
+        move |gui, start_over| {
+            read(presses, press_sender, timing, gui, start_over, start_over_key, sound, key_for_read)
+        },
     )
 }
 
@@ -89,6 +93,7 @@ fn cancel(countdown: &mut Option<Sender<()>>) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn read(
     presses: Receiver<(u8, Instant)>,
     press_sender: Sender<(u8, Instant)>,
@@ -97,14 +102,15 @@ fn read(
     start_over: Arc<AtomicBool>,
     start_over_key: Arc<AtomicBool>,
     sound: Arc<Sound>,
+    start_over_key_name: String,
 ) {
     let started = Instant::now();
     let log = Log { started, gui: Some(gui.clone()) };
     let failed_gui = gui.clone();
     let count_keys = CountKeys::new(press_sender, move || {
-        let error = "Couldn't use keys 3 and 4 from any program: another program has one. They work in this window.";
-        logfile::line(error);
-        failed_gui.add_log(error.to_owned());
+        logfile::line("Couldn't use keys 3 and 4 from any program: another program has one. They work in this window.");
+        failed_gui.add_log("Another program has key 3 or 4.".to_owned());
+        failed_gui.add_log("They only work in this window.".to_owned());
         failed_gui.set_global_keys_off();
     });
     count_keys.set_on(true);
@@ -117,6 +123,9 @@ fn read(
     let mut last_readings = Instant::now();
     let mut shown_percent = 0;
     let mut status = Status::Collecting(0);
+    let mut last_count = 0;
+    // The moment to press of the running countdown, until it's gone by
+    let mut cue_at: Option<Instant> = None;
 
     loop {
         // Presses are stamped when they're made, so waiting here doesn't change their time
@@ -126,6 +135,7 @@ fn read(
             cancel(&mut countdown);
             session.restart();
             status = Status::Collecting(0);
+            cue_at = None;
             gui.set_cue(None);
             gui.set_likely(None);
             gui.set_latest(String::new());
@@ -136,12 +146,23 @@ fn read(
             let at = at.saturating_duration_since(started).as_secs_f64();
             logfile::to_file(format_args!("press {count} {at:.3}"));
             if session.press(count, at) {
-                gui.set_latest("Flipped the last press".to_owned());
+                last_count = 7 - last_count;
+                gui.set_latest(format!("Flutter {}: now {last_count}", session.presses()));
             } else {
+                last_count = count;
                 gui.set_latest(format!("Flutter {}: pressed {count}", session.presses()));
                 if session.presses() == 1 {
                     gui.set_status(describe(&Status::Collecting(1)), Tone::Reading);
                 }
+            }
+        }
+
+        // Nothing here can see a dig, and it ends what's been read
+        if cue_at.is_some_and(|at| at <= Instant::now()) {
+            cue_at = None;
+            gui.set_latest(format!("Dug? Start over ({start_over_key_name}) before talking again"));
+            if status == Status::Locked {
+                gui.set_status(describe(&status), tone(&status));
             }
         }
 
@@ -173,30 +194,25 @@ fn read(
                     let at = started + Duration::from_secs_f64(at_seconds.max(0.0));
                     let frames = window.last_roll - window.first_roll + 1;
                     let margin = frames as f64 / GAME_FPS / 2.0 * 1000.0;
-                    log.line(format_args!(
-                        "Press A when the countdown reaches zero, in {:.1} s. Safe within +-{margin:.0} ms.",
-                        at_seconds - seconds
-                    ));
+                    log.line(format_args!("Press A at zero, in {:.1} s. +-{margin:.0} ms.", at_seconds - seconds));
                     logfile::to_file(format_args!("cue {at_seconds:.3}"));
                     cancel(&mut countdown);
                     countdown = Some(start_countdown(at, sound.clone()));
+                    cue_at = Some(at);
                     gui.set_cue(Some(at));
                     gui.set_likely(None);
-                    // A likely cue this took over from may have left its chance up
-                    gui.set_status(describe(&status), tone(&status));
+                    gui.set_status("Locked: follow the countdown".to_owned(), Tone::Locked);
                 }
                 Event::LikelyCue { seconds: box_seconds, chance } => {
                     let at_seconds = box_seconds - timing.lead_ms() / 1000.0;
                     let at = started + Duration::from_secs_f64(at_seconds.max(0.0));
                     let percent = ((chance * 100.0).round() as u32).min(99);
-                    log.line(format_args!(
-                        "{percent}% chance: press A at zero, in {:.1} s. No state is proven yet.",
-                        at_seconds - seconds
-                    ));
+                    log.line(format_args!("{percent}%: press A at zero, in {:.1} s.", at_seconds - seconds));
                     logfile::to_file(format_args!("likely {at_seconds:.3} {chance:.3}"));
                     cancel(&mut countdown);
                     countdown = Some(start_countdown(at, sound.clone()));
                     shown_percent = percent;
+                    cue_at = Some(at);
                     gui.set_cue(Some(at));
                     gui.set_likely(Some(percent));
                     gui.set_status(format!("{percent}% chance"), Tone::Warning);
@@ -211,7 +227,8 @@ fn read(
                 }
                 Event::LikelyCancelled => {
                     cancel(&mut countdown);
-                    log.line("That likely press isn't likely any more. Don't press yet.");
+                    cue_at = None;
+                    log.line("Not likely any more. Don't press yet.");
                     gui.set_cue(None);
                     gui.set_likely(None);
                     gui.set_status("Keep pressing".to_owned(), Tone::Reading);
@@ -223,12 +240,24 @@ fn read(
                 }
                 Event::CueCancelled => {
                     cancel(&mut countdown);
-                    log.line("Cancelled: the presses stopped matching. Don't press yet.");
+                    cue_at = None;
+                    log.line("Presses don't match. Don't press yet.");
                     gui.set_cue(None);
                     gui.set_likely(None);
                     gui.set_status("Cancelled: don't press yet".to_owned(), Tone::Warning);
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_flutter_is_not_flutters() {
+        assert_eq!(describe(&Status::Collecting(1)), "1 flutter so far");
+        assert_eq!(describe(&Status::Collecting(2)), "2 flutters so far");
     }
 }

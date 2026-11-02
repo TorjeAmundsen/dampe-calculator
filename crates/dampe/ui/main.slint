@@ -399,7 +399,7 @@ export component MainWindow inherits Window {
                         if root.manual: Text {
                             width: 100%;
                             height: 100%;
-                            text: "Press 3 or 4 as each of Dampe's flutters ends.\nPress either again right away to flip a wrong count.\n\n" + (root.global-keys && root.global-keys-available ? "Works from any program." : "Keep this window focused.");
+                            text: "Press 3 or 4 for how many blinks, as each of Dampe's flutters (bursts of blinks) ends.\nPress either again within 1.3 s to flip a wrong count.\n\nPress A on Yes when the countdown reaches zero.\nStart over before each new talk.\n\n" + (root.global-keys && root.global-keys-available ? "Works from any program." : "Keep this window focused.");
                             color: Colors.secondary;
                             font-size: 15px;
                             wrap: word-wrap;
@@ -451,7 +451,7 @@ export component MainWindow inherits Window {
                     Text {
                         y: 6px;
                         height: parent.height - 24px;
-                        text: root.countdown == "" ? "No press yet" : root.countdown;
+                        text: root.countdown == "" ? (root.manual ? "No countdown yet" : "No press yet") : root.countdown;
                         color: root.press ? black : root.countdown == "" ? Colors.secondary : white;
                         font-size: root.countdown == "" ? 14px : 34px;
                         font-weight: 700;

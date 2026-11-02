@@ -36,7 +36,8 @@ Then:
    about 3-4 seconds after the Yes/No box opens. Go to the Yes/No box whenever you like, and stay on it.
 3. Press **3** or **4** as each burst of blinks ends, for how many blinks it had. Press either again within 1.3 s to flip a count
    you got wrong.
-4. When a countdown starts, press A on Yes as it reaches zero. Anticipate it like a rhythm game rather than reacting.
+4. When a countdown starts, press A on Yes as it reaches zero. Anticipate it like a rhythm game rather than reacting. The dig ends
+   what's been read, so Start over before talking to him again.
 
 It takes about 14 flutters to be certain, which is 40 seconds or so, plus the wait for a good moment. You can stop pressing once
 it's locked. Telling 3 from 4 takes practice, and sloppy timing or counts mostly cost time.
@@ -51,7 +52,8 @@ if you need to type them, and then they only work with the window focused.
 - **Amber** comes earlier, with a percentage, before anything is proven. It may give a rupee, and you can wait for green if you
   prefer. Aim for zero as exactly as you can.
 
-A cue only cancels if 3 presses in a row don't match. Stopping never cancels one.
+A green cue only cancels if 3 presses in a row don't match. An amber one cancels if a press takes its chance under 70%. Stopping
+never cancels either.
 
 ### The list of candidates
 
