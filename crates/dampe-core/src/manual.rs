@@ -30,9 +30,13 @@ const SIGMA: f64 = 2.0;
 const PAIR_FRAMES: f64 = 10.0;
 /// The most one badly timed press can cost. It also doesn't move the fitted lateness.
 const OUTLIER_COST: f64 = 6.0;
-/// The cost of a flutter with no press, and of a press with no flutter: -ln(0.01).
+/// The cost of a flutter with no press: -ln(0.01).
 const MISS_COST: f64 = 4.6;
-const STRAY_COST: f64 = 4.6;
+/// The cost of a press with no flutter. Pair costs leave out the height of the bell curve, which is
+/// -ln(1 / (SIGMA * sqrt(2 pi))) = 1.6, so this is what's left of a stray once that's taken off: -ln(0.01)
+/// for it happening, ln(49) for landing anywhere in the 49 frames between flutters, and ln(2) for its
+/// count. Costing it like a miss made one about 20 times too likely.
+const STRAY_COST: f64 = 7.6;
 /// The cost of each count pressed for each real count: -ln(chance).
 const THREE_AS_THREE: f64 = 0.03;
 const THREE_AS_FOUR: f64 = 3.5;
@@ -57,6 +61,14 @@ const LINK_PHASES: std::ops::RangeInclusive<i64> = 1..=99;
 const LOCK_SHARE: f64 = 0.99;
 /// Presses a reading has to explain to be trusted.
 const LOCK_PRESSES: u32 = 12;
+/// What presses cost if the real reading isn't being followed, as one number to weigh against readings.
+/// Readings get a head start of ln(2^23 states * 99 Link phases), since the best of that many fits
+/// anything somewhat by chance. Scored on simulated presses unrelated to any state, this took locks from
+/// 19 of 20 to 0, and with a stray first press, wrong locks from 8 of 20 to 0, for up to 2 presses later.
+const NOT_FOUND_HEAD_START: f64 = 20.5;
+/// Each press with no reading behind it: ln(30) for landing anywhere in the 30 frames a wait can take,
+/// ln(2) for its count, less the 1.6 pair costs leave out (see [`STRAY_COST`]).
+const NOT_FOUND_PER_PRESS: f64 = 2.49;
 
 /// Presses in a row with no flutter anywhere near them that end a lock. Only those can: stopping once
 /// it's locked is the point, so flutters with no press say nothing, and one stray press from a hand
@@ -371,13 +383,26 @@ impl ManualTracker {
         &self.followed
     }
 
-    /// The chance of each followed reading, in order.
-    pub fn shares(&self) -> Vec<f64> {
-        let Some(best) = self.followed.first() else { return Vec::new() };
+    /// What presses that fit no reading cost: the real reading isn't being followed at all. Without
+    /// this, whatever is left after a bad scan can reach any share, however badly it fits.
+    fn not_found_cost(&self) -> f64 {
+        NOT_FOUND_PER_PRESS * self.presses.len().saturating_sub(self.anchor) as f64 - NOT_FOUND_HEAD_START
+    }
+
+    /// The chance of each followed reading, in order, and the chance it's none of them. A lock has
+    /// accepted its state, so nothing's held back for none of them after that.
+    fn shares_and_not_found(&self) -> (Vec<f64>, f64) {
+        let Some(best) = self.followed.first() else { return (Vec::new(), 0.0) };
         let best = best.score.cost;
         let weights: Vec<f64> = self.followed.iter().map(|f| (best - f.score.cost).exp()).collect();
-        let total: f64 = weights.iter().sum();
-        weights.into_iter().map(|weight| weight / total).collect()
+        let not_found = if self.locked { 0.0 } else { (best - self.not_found_cost()).exp() };
+        let total = weights.iter().sum::<f64>() + not_found;
+        (weights.into_iter().map(|weight| weight / total).collect(), not_found / total)
+    }
+
+    /// The chance of each followed reading, in order.
+    pub fn shares(&self) -> Vec<f64> {
+        self.shares_and_not_found().0
     }
 
     /// The likeliest reading's state's share of the weight. Looking at all of a big set would be slow,
@@ -467,8 +492,8 @@ impl ManualTracker {
 
     /// The `limit` likeliest readings, to show.
     fn readings(&self, limit: usize) -> Readings {
-        let top = self
-            .shares()
+        let (shares, not_found) = self.shares_and_not_found();
+        let top = shares
             .iter()
             .zip(&self.followed)
             .take(limit)
@@ -487,7 +512,7 @@ impl ManualTracker {
                 ),
             })
             .collect();
-        Readings { top, total: self.followed.len(), not_found: 0.0 }
+        Readings { top, total: self.followed.len(), not_found }
     }
 }
 
@@ -858,6 +883,30 @@ mod tests {
         let followed = vec![Followed { seed: 3_141_592, link_first: 40, score }];
         let locked_presses = presses.len();
         ManualTracker { presses: presses.to_vec(), followed, locked: true, locked_presses, ..ManualTracker::default() }
+    }
+
+    /// A tracker following one reading of `cost` over 16 presses.
+    fn following_one_of_cost(cost: f64, locked: bool) -> ManualTracker {
+        let presses = exact(3_141_592, 40, 16, 5.0);
+        let score = Score { cost, ..self::cost(&presses).expect("it fits") };
+        let followed = vec![Followed { seed: 3_141_592, link_first: 40, score }];
+        ManualTracker { presses, followed, locked, ..ManualTracker::default() }
+    }
+
+    /// The only reading left isn't proven by being the only one: it has to fit better than the best of
+    /// all states fits presses by chance.
+    #[test]
+    fn a_lone_reading_that_fits_badly_has_no_share_to_lock_with() {
+        assert!(following_one_of_cost(30.0, false).top_state_share() < 0.01);
+        assert!(following_one_of_cost(10.0, false).top_state_share() >= LOCK_SHARE);
+    }
+
+    /// Worth showing, and a lock has accepted its state.
+    #[test]
+    fn the_chance_of_none_of_them_is_shown_until_a_lock() {
+        let shown = |locked| following_one_of_cost(30.0, locked).readings(1).not_found;
+        assert!(shown(false) > 0.99);
+        assert_eq!(shown(true), 0.0);
     }
 
     /// Stopping once it's locked is the point, and a hand doesn't stop on the exact press.

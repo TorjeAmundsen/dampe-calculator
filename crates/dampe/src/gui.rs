@@ -152,7 +152,7 @@ fn reading_rows(readings: &Readings, left: impl Fn(&Reading) -> Option<f64>) -> 
         .collect();
     let summary = match readings.total {
         0 => "It takes a few flutters to start looking".to_owned(),
-        // Without video there's no estimate of the real one being missing
+        // Presses have accepted a state once locked, so nothing's left for the real one being missing
         total if readings.not_found == 0.0 => format!("{total} candidates"),
         1 => format!("1 candidate. Chance it's not this: {}", percent(readings.not_found)),
         total => format!("{total} candidates. Chance it's none of them: {}", percent(readings.not_found)),
