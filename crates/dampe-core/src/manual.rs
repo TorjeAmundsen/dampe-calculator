@@ -8,7 +8,7 @@
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use crate::rng::{Blinks, STATES, StateWalk, flutter_len, rolls_heart_piece};
+use crate::rng::{BOX_GONE_TO_ROLL, Blinks, STATES, StateWalk, flutter_len, rolls_heart_piece};
 use crate::solver::Candidate;
 use crate::tracker::{CONFIRMATIONS, LIKELY_MIN_CONFIDENCE, Reading, Readings, Status, Window, first_window};
 
@@ -82,10 +82,12 @@ const HORIZON: i64 = 1200;
 /// The most likely readings looked at for windows.
 const LIKELY_READINGS: usize = 300;
 const LIKELY_HORIZON: i64 = 600;
-/// Game frames between now and the earliest cue, so the countdown can be followed.
-const CUE_LEAD_FRAMES: i64 = 100;
-/// The same for a likely cue. Its point is being early, so it's shorter: just its countdown.
-const LIKELY_LEAD_FRAMES: i64 = 70;
+/// Game frames between now and the first dust of the earliest cue, so the countdown can be followed:
+/// the box leaves 33 frames before that, and the press about 10 before the box, which leaves a press
+/// about 5 s away.
+pub const CUE_LEAD_FRAMES: i64 = 100 + BOX_GONE_TO_ROLL;
+/// The same for a likely cue. Its point is being early, so it's shorter: just its countdown of 3 s.
+pub const LIKELY_LEAD_FRAMES: i64 = 70 + BOX_GONE_TO_ROLL;
 /// The shortest window worth pressing for: about a human's spread, plus the clock's.
 const MIN_WINDOW_FRAMES: i64 = 13;
 /// How far from a likely window's target the frames have to stay likely, for it to stay.
@@ -508,7 +510,7 @@ impl ManualTracker {
                 confirmed: if self.locked { CONFIRMATIONS } else { 0 },
                 next_window: first_window(
                     &[followed.candidate()],
-                    self.now as i64 + crate::rng::BOX_GONE_TO_ROLL,
+                    self.now as i64 + BOX_GONE_TO_ROLL,
                     MIN_WINDOW_FRAMES,
                     HORIZON,
                 ),
@@ -1001,6 +1003,16 @@ mod tests {
         assert!(next_seconds > cue_seconds, "{next_seconds} {cue_seconds}");
         session.restart();
         assert_eq!(session.presses(), 0);
+    }
+
+    /// The soonest cue of each kind has to leave its 3, 2, 1 to be heard, at Wii VC's latency of 150 ms.
+    #[test]
+    fn the_soonest_cues_leave_room_for_the_countdown() {
+        for lead in [LIKELY_LEAD_FRAMES, CUE_LEAD_FRAMES] {
+            let window = Window { first_roll: lead, last_roll: lead + MIN_WINDOW_FRAMES - 1 };
+            let press = ManualSession::window_seconds(&window) - (DEFAULT_LAG_MS + 150.0) / 1000.0;
+            assert!(press >= 3.0, "{press} s with a lead of {lead}");
+        }
     }
 
     /// What's said as a likely cue goes away, with its window from frame 100 to 112.

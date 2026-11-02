@@ -5,7 +5,9 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
-use dampe_core::manual::{DEFAULT_LAG_MS, Followed, GAME_FPS, ManualTracker, Press};
+use dampe_core::manual::{
+    CUE_LEAD_FRAMES, DEFAULT_LAG_MS, Followed, GAME_FPS, LIKELY_LEAD_FRAMES, ManualTracker, Press,
+};
 use dampe_core::rng::{Blinks, STATES, StateWalk, flutter_len, rolls_heart_piece};
 use dampe_core::solver::Candidate;
 use dampe_core::tracker::{Status, Window};
@@ -18,8 +20,6 @@ const LAG_FRAMES: f64 = DEFAULT_LAG_MS / 1000.0 * GAME_FPS;
 const SAME_FLUTTER_FRAMES: f64 = 8.0;
 /// A flutter is over this long before `now`, so its press can't still come.
 const PAST_FRAMES: f64 = 10.0;
-const CUE_LEAD_FRAMES: f64 = 100.0;
-const LIKELY_LEAD_FRAMES: f64 = 70.0;
 const MIN_WINDOW_FRAMES: i64 = 13;
 const LIKELY_MIN_CHANCE: f64 = 0.7;
 const SIMULATED_PRESSES: usize = 30;
@@ -100,14 +100,14 @@ fn run_case(case: &Case, verbose: bool) -> Outcome {
             outcome.lock = Some((i + 1, right));
         }
         if status == Status::Locked {
-            if let Some(window) = tracker.next_window((now + CUE_LEAD_FRAMES) as i64, MIN_WINDOW_FRAMES)
+            if let Some(window) = tracker.next_window(now as i64 + CUE_LEAD_FRAMES, MIN_WINDOW_FRAMES)
                 && seen.insert((window.first_roll, window.last_roll))
                 && let Some(rolled) = target_rolls(window, case)
             {
                 outcome.locked.push(rolled);
             }
         } else if let Some((window, chance)) =
-            tracker.likely_window((now + LIKELY_LEAD_FRAMES) as i64, MIN_WINDOW_FRAMES, LIKELY_MIN_CHANCE)
+            tracker.likely_window(now as i64 + LIKELY_LEAD_FRAMES, MIN_WINDOW_FRAMES, LIKELY_MIN_CHANCE)
             && seen.insert((window.first_roll, window.last_roll))
             && let Some(rolled) = target_rolls(window, case)
         {
