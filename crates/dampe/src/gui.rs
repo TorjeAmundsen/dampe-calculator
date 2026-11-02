@@ -292,6 +292,12 @@ impl Gui {
         });
     }
 
+    /// Takes down the countdown, and whether it was only likely.
+    pub fn clear_cue(&self) {
+        self.set_cue(None);
+        self.set_likely(None);
+    }
+
     /// When the countdown reaches zero, if one's running.
     pub fn set_cue(&self, cue: Option<Instant>) {
         *self.cue.lock().unwrap() = cue;

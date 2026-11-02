@@ -2,8 +2,11 @@
 //! state only counts after it predicted further flutters it hadn't seen, and contradicting the
 //! video ends it.
 
-use crate::reading::{CONFIRMATIONS, Reading, Readings, Status, Window, first_window};
-use crate::rng::{BOX_GONE_TO_ROLL, StateWalk, flutter_len, rolls_heart_piece};
+use crate::reading::{
+    CONFIRMATIONS, HORIZON, LIKELY_HORIZON, LIKELY_READINGS, Reading, Readings, Status, Window, chances_by_frame,
+    first_likely_window, first_window,
+};
+use crate::rng::{BOX_GONE_TO_ROLL, flutter_len};
 use crate::solver::{Candidate, Match, Observation, SEARCH_MISSES, scan_from};
 
 /// Flutters a reading must have seen to be considered at all. With [`CONFIRMATIONS`], that makes 8.
@@ -28,9 +31,6 @@ const MAX_MISSES_IN_A_ROW_PROVEN: u32 = 5;
 /// Each this many hits allows a reading one more miss while it's being narrowed down.
 const HITS_PER_ALLOWED_MISS: u32 = 3;
 
-/// Game frames looked ahead for a Heart Piece.
-const HORIZON: i64 = 1200;
-
 /// How likely a read's parts are, for weighing readings against each other: a real flutter being
 /// read at all, not being read, and a stray landing exactly where a reading has nothing. Learning the
 /// first two per read made no measurable difference on 10 recordings.
@@ -45,11 +45,6 @@ fn log_weight(m: &Match) -> f64 {
 /// The readings with less than this many hits are no better than what wasn't found at all: the real
 /// reading can be missing from the set, when a scan started from a stray.
 const UNEXPLAINED_HITS: f64 = 4.0;
-/// The most likely readings looked at for windows. The others only count against them.
-const LIKELY_READINGS: usize = 300;
-/// How far ahead an early window can be, in game frames.
-const LIKELY_HORIZON: i64 = 600;
-
 /// A window that probably gives the Heart Piece, before a state is proven.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LikelyWindow {
@@ -293,44 +288,22 @@ impl Tracker {
     fn chances(&self, frames: std::ops::Range<i64>) -> Option<(Vec<f64>, u32)> {
         let (shares, _) = self.shares()?;
         let best_hits = shares.first()?.1.latest.hits;
-        let mut walks: Vec<_> = shares
-            .iter()
-            .take(LIKELY_READINGS)
-            .map(|&(share, followed)| (share, StateWalk::new(followed.candidate.blinks()), followed.candidate.offset))
-            .collect();
-        let chances = frames
-            .map(|frame| {
-                walks
-                    .iter_mut()
-                    .map(
-                        |(weight, walk, offset)| {
-                            if rolls_heart_piece(walk.state_for_roll(frame - *offset)) { *weight } else { 0.0 }
-                        },
-                    )
-                    .sum()
-            })
-            .collect();
-        Some((chances, best_hits))
+        let readings = shares.iter().take(LIKELY_READINGS).map(|&(share, followed)| (share, followed.candidate));
+        Some((chances_by_frame(readings, frames), best_hits))
     }
 
     /// The first window from game frame `from` on, at least `min_frames` long, where every frame has
     /// at least `min_confidence` of giving the Heart Piece.
     pub fn likely_window(&self, from: i64, min_frames: i64, min_confidence: f64) -> Option<LikelyWindow> {
         let (chances, best_hits) = self.chances(from..from + LIKELY_HORIZON)?;
-        let mut run: Option<(i64, f64)> = None;
-        for (frame, &chance) in (from..).zip(&chances) {
-            if chance >= min_confidence {
-                let (start, lowest) = run.unwrap_or((frame, chance));
-                run = Some((start, lowest.min(chance)));
-            } else if let Some((start, lowest)) = run.take()
-                && frame - start >= min_frames
-            {
-                let window = Window { first_roll: start, last_roll: frame - 1 };
-                let chance = chances[(window.target() - from) as usize];
-                return Some(LikelyWindow { window, confidence: lowest, chance, best_hits });
-            }
-        }
-        None
+        let window = first_likely_window(&chances, from, min_frames, min_confidence)?;
+        let in_window = &chances[(window.first_roll - from) as usize..=(window.last_roll - from) as usize];
+        Some(LikelyWindow {
+            window,
+            confidence: in_window.iter().copied().fold(f64::INFINITY, f64::min),
+            chance: chances[(window.target() - from) as usize],
+            best_hits,
+        })
     }
 
     /// The chance of a dig on game frame `frame` giving the Heart Piece.
@@ -356,7 +329,7 @@ impl Tracker {
 mod tests {
     use super::*;
     use crate::reading::LIKELY_MIN_CONFIDENCE;
-    use crate::rng::Blinks;
+    use crate::rng::{Blinks, StateWalk, rolls_heart_piece};
 
     fn flutters(seed: u32, link: i64, n: usize) -> Vec<Observation> {
         let mut blinks = Blinks::new(seed, link);

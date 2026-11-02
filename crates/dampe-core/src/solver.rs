@@ -7,10 +7,9 @@
 //! what was seen.
 
 pub use crate::reading::Candidate;
-use crate::rng::{Blinks, STATES, flutter_len};
+use crate::reading::{LINK_PHASES, scan_all_states};
+use crate::rng::{Blinks, flutter_len};
 
-/// Link's first draw comes on one of these frames after the first renewal.
-const LINK_PHASES: std::ops::RangeInclusive<i64> = 1..=99;
 /// Flutters a reading may draw that the video didn't show, until it has enough hits to count.
 pub const SEARCH_MISSES: u32 = 2;
 /// How long after a flutter's end it's reported, at most: until then it can't count as missed.
@@ -147,19 +146,9 @@ fn scan(from: u32, to: u32, observations: &[Observation], now: i64, min_hits: u3
 }
 
 /// Every reading whose first flutter is `observations[0]`, with at least `min_hits` flutters seen,
-/// as of game frame `now`. This walks every state, on half of the cores: video comes first.
+/// as of game frame `now`. This walks every state.
 pub fn scan_from(observations: &[Observation], now: i64, min_hits: u32) -> Vec<Candidate> {
-    let threads = (std::thread::available_parallelism().map_or(4, |n| n.get()) as u32 / 2).max(1);
-    let chunk = STATES.div_ceil(threads);
-    std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..threads)
-            .map(|i| {
-                let (from, to) = (i * chunk, ((i + 1) * chunk).min(STATES));
-                scope.spawn(move || scan(from, to, observations, now, min_hits))
-            })
-            .collect();
-        workers.into_iter().flat_map(|worker| worker.join().expect("a scan thread panicked")).collect()
-    })
+    scan_all_states(|from, to| scan(from, to, observations, now, min_hits))
 }
 
 #[cfg(test)]

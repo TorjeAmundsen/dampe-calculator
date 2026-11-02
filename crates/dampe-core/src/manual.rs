@@ -9,9 +9,10 @@
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use crate::reading::{
-    CONFIRMATIONS, Candidate, LIKELY_MIN_CONFIDENCE, Reading, Readings, Status, Window, first_window,
+    CONFIRMATIONS, Candidate, HORIZON, LIKELY_HORIZON, LIKELY_MIN_CONFIDENCE, LIKELY_READINGS, LINK_PHASES, Reading,
+    Readings, Status, Window, chances_by_frame, first_likely_window, first_window, scan_all_states,
 };
-use crate::rng::{BOX_GONE_TO_ROLL, Blinks, STATES, StateWalk, flutter_len, rolls_heart_piece};
+use crate::rng::{BOX_GONE_TO_ROLL, Blinks};
 
 /// Game frames per second, which is all there is without video to measure it from.
 pub const GAME_FPS: f64 = 60000.0 / 1001.0 / 3.0;
@@ -57,9 +58,6 @@ const PRESSES_BETWEEN_SCANS: usize = 3;
 /// Readings followed after a scan, the cheapest ones.
 const MAX_FOLLOWED: usize = 300_000;
 
-/// Link's first draw comes on one of these frames after the first renewal.
-const LINK_PHASES: std::ops::RangeInclusive<i64> = 1..=99;
-
 /// How much less likely a Link phase is than if all were equally so, as a cost. His timer waits 20 to 99
 /// frames, and a renewal lands inside a long wait more often than a short one, so his next draw is
 /// `k` frames away in proportion to the waits at least that long: all 80 up to 20, then fewer. Those
@@ -88,11 +86,6 @@ const NOT_FOUND_PER_PRESS: f64 = 2.49;
 /// that hasn't stopped yet isn't enough. A wrong state's flutters land near a press about 1 time in 3.
 const LOCK_CONTRADICTIONS: u32 = 3;
 
-/// How far ahead windows are looked for, and how long they have to be, in game frames.
-const HORIZON: i64 = 1200;
-/// The most likely readings looked at for windows.
-const LIKELY_READINGS: usize = 300;
-const LIKELY_HORIZON: i64 = 600;
 /// Game frames between now and the first dust of the earliest cue, so the countdown can be followed:
 /// the box leaves 33 frames before that, and the press about 10 before the box, which leaves a press
 /// about 5 s away.
@@ -184,7 +177,7 @@ fn walk(mut blinks: Blinks, mut score: Score, presses: &[Press], now: f64) -> Op
     let mut next = 0;
     loop {
         let flutter = blinks.next_flutter();
-        let end = (flutter.start + flutter_len(flutter.count)) as f64 + score.lateness;
+        let end = flutter.end() as f64 + score.lateness;
         loop {
             let Some(&press) = presses.get(next) else {
                 // Past the last press: a flutter only counts as missed once its press can't come any more
@@ -221,7 +214,7 @@ fn walk(mut blinks: Blinks, mut score: Score, presses: &[Press], now: f64) -> Op
 fn compare(seed: u32, link_first: i64, presses: &[Press], now: f64) -> Option<Score> {
     let mut blinks = Blinks::new(seed, link_first);
     let first = blinks.next_flutter();
-    let score = Score::first(presses[0], first.start + flutter_len(first.count), first.count);
+    let score = Score::first(presses[0], first.end(), first.count);
     walk(blinks, score, &presses[1..], now)
 }
 
@@ -250,7 +243,7 @@ impl Followed {
         let mut blinks = Blinks::new(self.seed, self.link_first);
         loop {
             let flutter = blinks.next_flutter();
-            let end = (flutter.start + flutter_len(flutter.count)) as f64 + self.score.lateness;
+            let end = flutter.end() as f64 + self.score.lateness;
             if end + PAIR_FRAMES >= press.frame {
                 return end - PAIR_FRAMES <= press.frame;
             }
@@ -265,7 +258,7 @@ impl Followed {
         let mut state = blinks.state;
         loop {
             let flutter = blinks.next_flutter();
-            if (flutter.start + flutter_len(flutter.count)) as f64 + self.score.lateness + PAIR_FRAMES >= now {
+            if flutter.end() as f64 + self.score.lateness + PAIR_FRAMES >= now {
                 return state;
             }
             state = blinks.state;
@@ -279,7 +272,7 @@ fn scan_seeds(from: u32, to: u32, presses: &[Press], now: f64) -> Vec<Followed> 
         // The first flutter has no Link draw before it, whatever the phase
         let mut start = Blinks::new(seed, i64::MAX);
         let flutter = start.next_flutter();
-        let score = Score::first(presses[0], flutter.start + flutter_len(flutter.count), flutter.count);
+        let score = Score::first(presses[0], flutter.end(), flutter.count);
         for link_first in LINK_PHASES {
             let blinks = Blinks { link_next: link_first, ..start };
             if let Some(score) = walk(blinks, score, &presses[1..], now) {
@@ -290,19 +283,9 @@ fn scan_seeds(from: u32, to: u32, presses: &[Press], now: f64) -> Vec<Followed> 
     found
 }
 
-/// Every reading whose first flutter is `presses[0]`, on half of the cores.
+/// Every reading whose first flutter is `presses[0]`.
 pub fn scan(presses: &[Press], now: f64) -> Vec<Followed> {
-    let threads = (std::thread::available_parallelism().map_or(4, |n| n.get()) as u32 / 2).max(1);
-    let chunk = STATES.div_ceil(threads);
-    std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..threads)
-            .map(|i| {
-                let (from, to) = (i * chunk, ((i + 1) * chunk).min(STATES));
-                scope.spawn(move || scan_seeds(from, to, presses, now))
-            })
-            .collect();
-        workers.into_iter().flat_map(|worker| worker.join().expect("a scan thread panicked")).collect()
-    })
+    scan_all_states(|from, to| scan_seeds(from, to, presses, now))
 }
 
 /// Follows presses to a state.
@@ -460,45 +443,16 @@ impl ManualTracker {
     /// The chance of a dig on each of `frames`, in press frames, giving the Heart Piece.
     fn chances(&self, frames: std::ops::Range<i64>) -> Vec<f64> {
         let shares = self.shares();
-        let mut walks: Vec<_> = shares
-            .iter()
-            .zip(&self.followed)
-            .take(LIKELY_READINGS)
-            .map(|(&share, followed)| {
-                let candidate = followed.candidate();
-                (share, StateWalk::new(candidate.blinks()), candidate.offset)
-            })
-            .collect();
-        frames
-            .map(|frame| {
-                walks
-                    .iter_mut()
-                    .map(
-                        |(share, walk, offset)| {
-                            if rolls_heart_piece(walk.state_for_roll(frame - *offset)) { *share } else { 0.0 }
-                        },
-                    )
-                    .sum()
-            })
-            .collect()
+        let readings = shares.iter().zip(&self.followed).take(LIKELY_READINGS);
+        chances_by_frame(readings.map(|(&share, followed)| (share, followed.candidate())), frames)
     }
 
     /// The first window from press frame `from` on, at least `min_frames` long, where every frame has
     /// at least `min_chance` of giving the Heart Piece. Also the chance at its middle.
     pub fn likely_window(&self, from: i64, min_frames: i64, min_chance: f64) -> Option<(Window, f64)> {
         let chances = self.chances(from..from + LIKELY_HORIZON);
-        let mut start = None;
-        for (frame, &chance) in (from..).zip(&chances) {
-            if chance >= min_chance {
-                start.get_or_insert(frame);
-            } else if let Some(first) = start.take()
-                && frame - first >= min_frames
-            {
-                let window = Window { first_roll: first, last_roll: frame - 1 };
-                return Some((window, chances[(window.target() - from) as usize]));
-            }
-        }
-        None
+        let window = first_likely_window(&chances, from, min_frames, min_chance)?;
+        Some((window, chances[(window.target() - from) as usize]))
     }
 
     /// The lowest chance of any frame of `window` giving the Heart Piece.
@@ -811,6 +765,7 @@ impl ManualSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rng::{StateWalk, rolls_heart_piece};
 
     /// Presses exactly `late` frames after each flutter's end, with the right counts.
     fn exact(seed: u32, link: i64, n: usize, late: f64) -> Vec<Press> {
@@ -818,7 +773,7 @@ mod tests {
         (0..n)
             .map(|_| {
                 let flutter = blinks.next_flutter();
-                Press { frame: (flutter.start + flutter_len(flutter.count)) as f64 + late, count: flutter.count }
+                Press { frame: flutter.end() as f64 + late, count: flutter.count }
             })
             .collect()
     }

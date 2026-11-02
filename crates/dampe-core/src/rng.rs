@@ -49,8 +49,12 @@ pub const fn flutter_len(count: u8) -> i64 {
     3 * count as i64 - 1
 }
 
-/// Game frames Dampe waits between flutters.
-pub const WAIT_RANGE: std::ops::RangeInclusive<i64> = 30..=59;
+/// Game frames Dampe waits between flutters: at least this, plus one of this many values.
+const WAIT_BASE: i32 = 30;
+const WAIT_VALUES: i32 = 30;
+/// The same for Link's blink timer (`FaceChange_UpdateBlinking(20, 80, 6)`).
+const LINK_WAIT_BASE: i32 = 20;
+const LINK_WAIT_VALUES: i32 = 80;
 
 /// Whether a dig rolled from `state` gives the Heart Piece, `state` being the RNG on the frame the
 /// dig starts, before the dust.
@@ -80,21 +84,35 @@ pub struct ModelFlutter {
     pub count: u8,
 }
 
+impl ModelFlutter {
+    /// The game frame it ends on.
+    #[inline]
+    pub const fn end(&self) -> i64 {
+        self.start + flutter_len(self.count)
+    }
+}
+
 impl Blinks {
     /// `state` just before a Dampe renewal at frame 0, with Link's next draw at `link_next`.
     pub fn new(state: u32, link_next: i64) -> Self {
         Self { state, renewal: 0, link_next }
     }
 
+    /// Link's draw, and the frame of his next one.
+    #[inline]
+    fn link_draw(&mut self) {
+        self.state = next(self.state);
+        self.link_next += i64::from(s16_offset(self.state, LINK_WAIT_BASE, LINK_WAIT_VALUES));
+    }
+
     /// Runs up to and including the next Dampe renewal, and returns the flutter it starts.
     #[inline]
     pub fn next_flutter(&mut self) -> ModelFlutter {
         while self.link_next <= self.renewal {
-            self.state = next(self.state);
-            self.link_next += i64::from(s16_offset(self.state, 20, 80));
+            self.link_draw();
         }
         self.state = next(self.state);
-        let wait = i64::from(s16_offset(self.state, 30, 30));
+        let wait = i64::from(s16_offset(self.state, WAIT_BASE, WAIT_VALUES));
         self.state = next(self.state);
         let count = blink_count(self.state);
         let start = self.renewal + wait;
@@ -122,8 +140,7 @@ impl StateWalk {
             let link = self.blinks.link_next;
             let dampe = self.blinks.renewal;
             if link <= frame && link <= dampe {
-                self.blinks.state = next(self.blinks.state);
-                self.blinks.link_next += i64::from(s16_offset(self.blinks.state, 20, 80));
+                self.blinks.link_draw();
             } else if dampe < frame {
                 self.blinks.next_flutter();
             } else {
@@ -139,8 +156,7 @@ impl StateWalk {
             let link = self.blinks.link_next;
             let dampe = self.blinks.renewal;
             if link <= frame && link <= dampe {
-                self.blinks.state = next(self.blinks.state);
-                self.blinks.link_next += i64::from(s16_offset(self.blinks.state, 20, 80));
+                self.blinks.link_draw();
             } else if dampe <= frame {
                 self.blinks.next_flutter();
             } else {
@@ -168,9 +184,9 @@ mod tests {
         let mut last_end = 0;
         for _ in 0..1000 {
             let flutter = blinks.next_flutter();
-            assert!(WAIT_RANGE.contains(&(flutter.start - last_end)));
+            assert!((30..=59).contains(&(flutter.start - last_end)));
             assert!(flutter.count == 3 || flutter.count == 4);
-            last_end = flutter.start + flutter_len(flutter.count);
+            last_end = flutter.end();
         }
     }
 

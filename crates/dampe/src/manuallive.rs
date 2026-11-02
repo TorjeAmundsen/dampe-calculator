@@ -31,6 +31,11 @@ fn tone(status: &Status) -> Tone {
     if *status == Status::Locked { Tone::Locked } else { Tone::Reading }
 }
 
+/// A chance as shown: nothing's certain until it's locked, so never 100%.
+fn shown_percent_of(chance: f64) -> u32 {
+    ((chance * 100.0).round() as u32).min(99)
+}
+
 fn describe(status: &Status) -> String {
     match status {
         Status::Collecting(1) => "1 flutter so far".to_owned(),
@@ -144,6 +149,11 @@ fn read(
     let mut readings_shown = Readings::default();
     let mut last_readings = Instant::now();
     let mut shown_percent = 0;
+    // When to press for the box to leave at `box_seconds`, on the clock since `started` and as an instant
+    let moment_to_press = |box_seconds: f64| {
+        let at_seconds = box_seconds - timing.lead_ms() / 1000.0;
+        (at_seconds, started + Duration::from_secs_f64(at_seconds.max(0.0)))
+    };
     let mut status = Status::Collecting(0);
     let mut last_count = 0;
     // The moment to press of the running countdown, until it's gone by
@@ -158,8 +168,7 @@ fn read(
             session.restart();
             status = Status::Collecting(0);
             cue_at = None;
-            gui.set_cue(None);
-            gui.set_likely(None);
+            gui.clear_cue();
             gui.set_latest(String::new());
             gui.set_status(WAITING.to_owned(), Tone::Reading);
             log.line("Starting over.");
@@ -212,8 +221,7 @@ fn read(
                     gui.set_status(describe(&status), tone(&status));
                 }
                 Event::Cue { seconds: box_seconds, window } => {
-                    let at_seconds = box_seconds - timing.lead_ms() / 1000.0;
-                    let at = started + Duration::from_secs_f64(at_seconds.max(0.0));
+                    let (at_seconds, at) = moment_to_press(box_seconds);
                     let frames = window.last_roll - window.first_roll + 1;
                     let margin = frames as f64 / GAME_FPS / 2.0 * 1000.0;
                     log.line(format_args!("Press A at zero, in {:.1} s. +-{margin:.0} ms.", at_seconds - seconds));
@@ -226,9 +234,8 @@ fn read(
                     gui.set_status("Locked: follow the countdown".to_owned(), Tone::Locked);
                 }
                 Event::LikelyCue { seconds: box_seconds, chance } => {
-                    let at_seconds = box_seconds - timing.lead_ms() / 1000.0;
-                    let at = started + Duration::from_secs_f64(at_seconds.max(0.0));
-                    let percent = ((chance * 100.0).round() as u32).min(99);
+                    let (at_seconds, at) = moment_to_press(box_seconds);
+                    let percent = shown_percent_of(chance);
                     log.line(format_args!("{percent}%: press A at zero, in {:.1} s.", at_seconds - seconds));
                     logfile::to_file(format_args!("likely {at_seconds:.3} {chance:.3}"));
                     cancel(&mut countdown);
@@ -240,7 +247,7 @@ fn read(
                     gui.set_status(format!("{percent}% chance"), Tone::Warning);
                 }
                 Event::LikelyChance { chance } => {
-                    let percent = ((chance * 100.0).round() as u32).min(99);
+                    let percent = shown_percent_of(chance);
                     if percent != shown_percent {
                         shown_percent = percent;
                         gui.set_likely(Some(percent));
@@ -251,8 +258,7 @@ fn read(
                     cancel(&mut countdown);
                     cue_at = None;
                     log.line("Not likely any more. Don't press yet.");
-                    gui.set_cue(None);
-                    gui.set_likely(None);
+                    gui.clear_cue();
                     gui.set_status("Keep pressing".to_owned(), Tone::Reading);
                 }
                 // The window takes the countdown down by itself, right after the moment to press
@@ -264,8 +270,7 @@ fn read(
                     cancel(&mut countdown);
                     cue_at = None;
                     log.line("Presses don't match. Don't press yet.");
-                    gui.set_cue(None);
-                    gui.set_likely(None);
+                    gui.clear_cue();
                     gui.set_status("Cancelled: don't press yet".to_owned(), Tone::Warning);
                 }
             }

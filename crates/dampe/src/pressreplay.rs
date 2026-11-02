@@ -49,9 +49,8 @@ struct Outcome {
 /// `now`. Its next flutters may still differ: when Link next blinks can stay unknown for a long time,
 /// for the state from the video as well, and windows allow for that by needing every such reading.
 fn is_true(followed: &Followed, case: &Case, now: f64) -> bool {
-    let end_of = |flutter: dampe_core::rng::ModelFlutter| {
-        (flutter.start + flutter_len(flutter.count) + case.truth.offset) as f64 - case.shift + LAG_FRAMES
-    };
+    let end_of =
+        |flutter: dampe_core::rng::ModelFlutter| (flutter.end() + case.truth.offset) as f64 - case.shift + LAG_FRAMES;
     let mut truth = case.truth.blinks();
     let first = truth.next_flutter();
     let (mut truth_end, mut truth_state) = (end_of(first), truth.state);
@@ -65,7 +64,7 @@ fn is_true(followed: &Followed, case: &Case, now: f64) -> bool {
     let mut blinks = Blinks::new(followed.seed, followed.link_first);
     loop {
         let flutter = blinks.next_flutter();
-        let end = (flutter.start + flutter_len(flutter.count)) as f64 + followed.score.lateness;
+        let end = (flutter.end()) as f64 + followed.score.lateness;
         if end >= truth_end - SAME_FLUTTER_FRAMES {
             return end <= truth_end + SAME_FLUTTER_FRAMES && blinks.state == truth_state;
         }
@@ -200,7 +199,7 @@ fn simulated(i: usize, random: &mut Random, sigma: f64, four_as_three: f64) -> C
     let presses = (0..SIMULATED_PRESSES)
         .map(|_| {
             let flutter = blinks.next_flutter();
-            let frame = (flutter.start + flutter_len(flutter.count)) as f64 + LAG_FRAMES + sigma * random.normal();
+            let frame = (flutter.end()) as f64 + LAG_FRAMES + sigma * random.normal();
             let count = if flutter.count == 4 && random.next() < four_as_three { 3 } else { flutter.count };
             Press { frame, count }
         })
