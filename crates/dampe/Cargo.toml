@@ -9,7 +9,19 @@ license.workspace = true
 windowed = []
 # Reading flutters from a video device, and everything for testing that. Without it, flutters can only
 # be pressed by hand, and the program has no code for reading video at all.
-video = ["dampe-core/video", "dep:linuxvideo", "dep:libc"]
+video = [
+    "dampe-core/video",
+    "dep:linuxvideo",
+    "dep:libc",
+    "dep:windows-core",
+    "windows/Win32_Graphics_Gdi",
+    "windows/Win32_Media_DirectShow",
+    "windows/Win32_Media_MediaFoundation",
+    "windows/Win32_System_Com",
+    "windows/Win32_System_Com_StructuredStorage",
+    "windows/Win32_System_Ole",
+    "windows/Win32_System_Variant",
+]
 
 [dependencies]
 dampe-core = { path = "../dampe-core" }
@@ -26,20 +38,12 @@ linuxvideo = { version = "0.3.5", optional = true }
 libc = { version = "0.2", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-core = "0.62"
+windows-core = { version = "0.62", optional = true }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
-    "Win32_Graphics_Gdi",
-    "Win32_Media",
     "Win32_Media_Audio",
-    "Win32_Media_DirectShow",
-    "Win32_Media_MediaFoundation",
-    "Win32_System_Com",
-    "Win32_System_Com_StructuredStorage",
     "Win32_System_Console",
-    "Win32_System_Ole",
     "Win32_System_Threading",
-    "Win32_System_Variant",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
