@@ -92,6 +92,8 @@ const LOCK_CONTRADICTIONS: u32 = 3;
 pub const CUE_LEAD_FRAMES: i64 = 100 + BOX_GONE_TO_ROLL;
 /// The same for a likely cue. Its point is being early, so it's shorter: just its countdown of 3 s.
 pub const LIKELY_LEAD_FRAMES: i64 = 70 + BOX_GONE_TO_ROLL;
+/// How long before the box should leave those leads allow for: the default lag, and Wii VC's latency.
+const TYPICAL_PRESS_LEAD_SECONDS: f64 = (DEFAULT_LAG_MS + 150.0) / 1000.0;
 /// The shortest window worth pressing for: about a human's spread, plus the clock's.
 const MIN_WINDOW_FRAMES: i64 = 13;
 /// How far from a likely window's target the frames have to stay likely, for it to stay.
@@ -540,13 +542,18 @@ enum Work {
     Reset(u64),
 }
 
+/// Game frames to add to the leads, for pressing further ahead of the box than they allow for.
+fn extra_lead_frames(press_lead_seconds: f64) -> i64 {
+    ((press_lead_seconds - TYPICAL_PRESS_LEAD_SECONDS) * GAME_FPS).ceil().max(0.0) as i64
+}
+
 /// Whether a press can still make a window.
 fn still_ahead(window: &Window, now: f64) -> bool {
     window.box_gone().1 as f64 >= now
 }
 
 /// Scans can take seconds, and the window's clock doesn't wait.
-fn search_thread(work: Receiver<Work>, updates: Sender<Update>) {
+fn search_thread(work: Receiver<Work>, updates: Sender<Update>, extra_lead: i64) {
     let mut tracker = ManualTracker::new();
     let mut likely: Option<Window> = None;
     let mut generation = 0;
@@ -574,7 +581,10 @@ fn search_thread(work: Receiver<Work>, updates: Sender<Update>) {
             }
         }
         if let Some(now) = pressed {
+            let before = tracker.now;
+            let started = std::time::Instant::now();
             tracker.update(now);
+            tracker.set_now(before.max(now + started.elapsed().as_secs_f64() * GAME_FPS));
         }
         let now = tracker.now;
         let locked = tracker.status() == Status::Locked;
@@ -589,7 +599,7 @@ fn search_thread(work: Receiver<Work>, updates: Sender<Update>) {
         }
         let window = proven.or_else(|| {
             (locked && likely.is_none())
-                .then(|| tracker.next_window(now as i64 + CUE_LEAD_FRAMES, MIN_WINDOW_FRAMES))
+                .then(|| tracker.next_window(now as i64 + CUE_LEAD_FRAMES + extra_lead, MIN_WINDOW_FRAMES))
                 .flatten()
         });
         let mut likely_update = likely.map(|window| {
@@ -597,8 +607,11 @@ fn search_thread(work: Receiver<Work>, updates: Sender<Update>) {
             (window, tracker.chances(target..target + 1)[0])
         });
         if likely.is_none() && window.is_none() {
-            likely_update =
-                tracker.likely_window(now as i64 + LIKELY_LEAD_FRAMES, MIN_WINDOW_FRAMES, LIKELY_MIN_CONFIDENCE);
+            likely_update = tracker.likely_window(
+                now as i64 + LIKELY_LEAD_FRAMES + extra_lead,
+                MIN_WINDOW_FRAMES,
+                LIKELY_MIN_CONFIDENCE,
+            );
             likely = likely_update.map(|(window, _)| window);
         }
         let update = Update {
@@ -631,19 +644,15 @@ pub struct ManualSession {
     last_look: f64,
 }
 
-impl Default for ManualSession {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ManualSession {
-    pub fn new() -> Self {
+    /// `press_lead_seconds` is how long before the box should leave a press has to come.
+    pub fn new(press_lead_seconds: f64) -> Self {
+        let extra_lead = extra_lead_frames(press_lead_seconds);
         let (work, work_receiver) = channel();
         let (update_sender, updates) = channel();
         std::thread::Builder::new()
             .name("search".into())
-            .spawn(move || search_thread(work_receiver, update_sender))
+            .spawn(move || search_thread(work_receiver, update_sender, extra_lead))
             .expect("couldn't start the search thread");
         Self {
             work,
@@ -974,7 +983,7 @@ mod tests {
     #[test]
     fn a_session_cues_from_presses_and_goes_on_without_them() {
         let presses = exact(3_141_592, 40, 20, 6.0);
-        let mut session = ManualSession::new();
+        let mut session = ManualSession::new(TYPICAL_PRESS_LEAD_SECONDS);
         let mut events = Vec::new();
         for (i, press) in presses.iter().enumerate() {
             let seconds = press.frame / GAME_FPS;
@@ -997,11 +1006,12 @@ mod tests {
             Event::Cue { seconds, window, .. } => Some((*seconds, *window)),
             _ => None,
         };
+        // The clock goes on while waiting, as a real one does, or windows it was looking for never pass
         let mut wait_for_cue = |session: &mut ManualSession, seconds: f64| {
             let started = std::time::Instant::now();
             loop {
                 assert!(started.elapsed().as_secs() < 600, "no cue");
-                session.tick(seconds, &mut events);
+                session.tick(seconds + started.elapsed().as_secs_f64(), &mut events);
                 if let Some(cue) = events.iter().rev().find_map(cue_of) {
                     events.clear();
                     return cue;
@@ -1029,9 +1039,21 @@ mod tests {
         }
     }
 
+    /// A long lag means pressing long before the box leaves, which the countdown still has to fit.
+    #[test]
+    fn a_long_lag_moves_the_soonest_cues_back() {
+        assert_eq!(extra_lead_frames(TYPICAL_PRESS_LEAD_SECONDS), 0);
+        assert_eq!(extra_lead_frames(0.1), 0, "a short one has room to spare");
+        let long = 2.15;
+        let lead = LIKELY_LEAD_FRAMES + extra_lead_frames(long);
+        let window = Window { first_roll: lead, last_roll: lead + MIN_WINDOW_FRAMES - 1 };
+        let press = ManualSession::window_seconds(&window) - long;
+        assert!(press >= 3.0, "{press} s");
+    }
+
     /// What's said as a likely cue goes away, with its window from frame 100 to 112.
     fn events_as_a_likely_cue_goes(now: f64, window: Option<Window>) -> Vec<Event> {
-        let mut session = ManualSession::new();
+        let mut session = ManualSession::new(TYPICAL_PRESS_LEAD_SECONDS);
         session.likely_cue = Some(Window { first_roll: 100, last_roll: 112 });
         let status = session.status.clone();
         let mut events = Vec::new();

@@ -190,7 +190,7 @@ mod tests {
     fn busy(frame: usize) -> Vec<u8> {
         let mut picture = looping(frame);
         picture[..ABOVE_BOX].iter_mut().enumerate().for_each(|(i, pixel)| {
-            if (i + frame * 7) % 3 == 0 {
+            if (i + frame * 7).is_multiple_of(3) {
                 *pixel = 180;
             }
         });

@@ -164,9 +164,11 @@ fn reading_rows(readings: &Readings, left: impl Fn(&Reading) -> Option<f64>) -> 
 /// Repaints the whole window with the next change, if it isn't showing video. See the rectangle this
 /// flips for why. Video's frames are too frequent and too big to add this to, and hide the problem.
 fn repaint_all(window: &MainWindow) {
-    if window.get_manual() {
-        window.set_repaint_all(!window.get_repaint_all());
+    #[cfg(feature = "video")]
+    if !window.get_manual() {
+        return;
     }
+    window.set_repaint_all(!window.get_repaint_all());
 }
 
 /// Talks to the window from the read's thread.
@@ -347,6 +349,7 @@ pub fn run(options: Options, read: impl FnOnce(Gui, Arc<AtomicBool>) + Send + 's
     let window = MainWindow::new().map_err(|e| e.to_string())?;
     window.set_source(source.into());
     if let Some(start) = manual {
+        #[cfg(feature = "video")]
         window.set_manual(true);
         window.set_global_keys_available(hotkey::AVAILABLE);
         window.set_global_keys(start.global_keys);
@@ -421,6 +424,8 @@ pub fn run(options: Options, read: impl FnOnce(Gui, Arc<AtomicBool>) + Send + 's
                 window.set_countdown_share(0.0);
                 window.set_pulse(false);
                 window.set_press(false);
+                window.set_likely(false);
+                window.set_likely_text(SharedString::new());
             }
             return;
         };

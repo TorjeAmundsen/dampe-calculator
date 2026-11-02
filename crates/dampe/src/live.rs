@@ -192,8 +192,7 @@ fn read(
                 press_log.read_started();
             }
             if let Some(gui) = &gui {
-                gui.set_cue(None);
-                gui.set_likely(None);
+                gui.clear_cue();
                 gui.set_status("Starting over".to_owned(), Tone::Reading);
                 gui.set_latest(String::new());
             }
@@ -210,8 +209,7 @@ fn read(
                 press_log.read_started();
             }
             if let Some(gui) = &gui {
-                gui.set_cue(None);
-                gui.set_likely(None);
+                gui.clear_cue();
                 gui.set_latest(String::new());
                 let status = if session.started_by_hand() {
                     "Forced start with no text box up: reading whatever is on screen"
@@ -362,8 +360,7 @@ fn read(
                     flutters = 0;
                     log.line("The text ended with no Yes/No box. Waiting for the next text box.");
                     if let Some(gui) = &gui {
-                        gui.set_cue(None);
-                        gui.set_likely(None);
+                        gui.clear_cue();
                         gui.set_status(
                             "Talk to Dampe: reading starts by itself at his first text box".to_owned(),
                             Tone::Reading,
@@ -446,15 +443,13 @@ fn read(
                     cue_at = None;
                     log.line("That likely press isn't likely any more. Don't press yet.");
                     if let Some(gui) = &gui {
-                        gui.set_cue(None);
-                        gui.set_likely(None);
+                        gui.clear_cue();
                         gui.set_status("Reading flutters".to_owned(), Tone::Reading);
                     }
                 }
                 Event::CueCancelled => {
                     if let Some(gui) = &gui {
-                        gui.set_cue(None);
-                        gui.set_likely(None);
+                        gui.clear_cue();
                         gui.set_status("Cancelled: don't press yet".to_owned(), Tone::Warning);
                     }
                     if let Some(cancel) = countdown.take() {
@@ -465,8 +460,7 @@ fn read(
                 }
                 Event::BoxGone { seconds: gone, heart_piece, .. } => {
                     if let Some(gui) = &gui {
-                        gui.set_cue(None);
-                        gui.set_likely(None);
+                        gui.clear_cue();
                         gui.set_status(
                             "Talk to Dampe: reading starts by itself at his first text box".to_owned(),
                             Tone::Reading,

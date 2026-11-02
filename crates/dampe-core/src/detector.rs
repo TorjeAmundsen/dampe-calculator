@@ -122,6 +122,11 @@ pub struct Flutter {
 }
 
 impl Flutter {
+    /// The game frame it ends on.
+    fn end(&self) -> i64 {
+        self.start + flutter_len(self.count)
+    }
+
     /// Whether every frame matched. On real footage, about 97% of these are real flutters, against
     /// about 1 in 5 of the others, so these are what's worth starting a scan from.
     pub fn is_clean(&self) -> bool {
@@ -688,7 +693,7 @@ impl Detector {
         // Frames that turn out to be part of a flutter leave the reference
         for flutter in flutters.iter().filter(|flutter| flutter.is_clean()) {
             self.clean_starts.push(flutter.start);
-            let range = flutter.start..flutter.start + flutter_len(flutter.count);
+            let range = flutter.start..flutter.end();
             for (game_frame, frame) in frames {
                 if range.contains(game_frame) {
                     self.points[*game_frame as usize % IDLE_LOOP_FRAMES].remove(frame);
@@ -861,7 +866,7 @@ impl Detector {
             self.clean_starts.retain(|&start| start >= loop_back);
             self.clean_starts.push(flutter.start);
             if !repeats {
-                let range = flutter.start..flutter.start + flutter_len(flutter.count);
+                let range = flutter.start..flutter.end();
                 self.pending.retain(|pending| !range.contains(&pending.game_frame));
             }
         }
@@ -1096,7 +1101,7 @@ mod tests {
         let mut flutters = Vec::new();
         loop {
             let flutter = blinks.next_flutter();
-            if flutter.start + flutter_len(flutter.count) >= frames {
+            if flutter.end() >= frames {
                 return (flutters, states);
             }
             flutters.push((flutter.start, flutter.count));

@@ -150,7 +150,7 @@ fn read(
         hotkey::save_count_keys_on(on);
         count_keys.set_on(on);
     });
-    let mut session = ManualSession::new();
+    let mut session = ManualSession::new(timing.lead_ms() / 1000.0);
     let mut events = Vec::new();
     let mut countdown: Option<Sender<()>> = None;
     let mut readings_shown = Readings::default();
