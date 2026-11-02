@@ -9,11 +9,12 @@ use std::process::{Command, Stdio};
 use dampe_core::detector::{Cadence, Detector, Flutter};
 use dampe_core::navi::NaviWatch;
 use dampe_core::picture::{HEIGHT, Luma, Normalizer, WIDTH};
+use dampe_core::reading::LIKELY_MIN_CONFIDENCE;
 use dampe_core::rng::{self, StateWalk, flutter_len, rolls_heart_piece};
 use dampe_core::session::{Event, Session};
 use dampe_core::solver::Observation;
 use dampe_core::textbox::{Change, TextboxWatch};
-use dampe_core::tracker::{LIKELY_MIN_CONFIDENCE, Tracker};
+use dampe_core::tracker::Tracker;
 
 /// The RNG watch's state per game frame, in the recording's own game frames.
 struct Truth {

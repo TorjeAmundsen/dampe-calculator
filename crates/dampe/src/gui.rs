@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use dampe_core::detector::Rect;
 #[cfg(feature = "video")]
 use dampe_core::picture::{GAME_HEIGHT, GAME_WIDTH, GameArea, MARGIN_X, MARGIN_Y};
-use dampe_core::tracker::{Reading, Readings};
+use dampe_core::reading::{Reading, Readings};
 use slint::{Color, ComponentHandle, ModelRc, SharedString, VecModel, Weak};
 #[cfg(feature = "video")]
 use slint::{Rgba8Pixel, SharedPixelBuffer};

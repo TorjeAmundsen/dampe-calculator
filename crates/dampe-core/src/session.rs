@@ -6,10 +6,11 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use crate::detector::{Cadence, Detector, Flutter, Health, Rect};
 use crate::navi::NaviWatch;
 use crate::picture::{GameArea, HEIGHT, Luma, Normalizer, WIDTH};
+use crate::reading::{Candidate, LIKELY_MIN_CONFIDENCE, Readings, Status, Window};
 use crate::rng::{BOX_GONE_TO_ROLL, StateWalk, rolls_heart_piece};
-use crate::solver::{Candidate, Observation};
+use crate::solver::Observation;
 use crate::textbox::{Change, FRAMES_TO_CLOSE, TextWatch, TextboxWatch};
-use crate::tracker::{LIKELY_MIN_CONFIDENCE, Readings, Status, Tracker, Window};
+use crate::tracker::Tracker;
 
 /// Game frames between now and the earliest cue, so the countdown can be followed.
 const CUE_LEAD_FRAMES: i64 = 100;

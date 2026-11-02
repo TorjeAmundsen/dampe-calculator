@@ -15,6 +15,7 @@ use std::sync::Mutex;
 const GAME_FRAME_MS: f64 = 50.0;
 /// The feed delay until a press has measured it, in milliseconds: from the first presses on a Wii
 /// through OBS Virtual Camera.
+#[cfg(any(feature = "video", test))]
 const DEFAULT_FEED_DELAY_MS: f64 = 100.0;
 /// Presses kept for the median, so one mistimed press can't move it far.
 #[cfg(any(feature = "video", test))]
@@ -57,11 +58,13 @@ impl Platform {
 #[derive(Clone, Debug, PartialEq)]
 struct State {
     platform: Platform,
+    /// Only measured with video. Without it they're kept as they are, since builds share the file.
     measurements: Vec<f64>,
     /// A delay given on the command line, instead of what's been measured.
     fixed_feed_delay: Option<f64>,
 }
 
+#[cfg(any(feature = "video", test))]
 fn median(values: &[f64]) -> Option<f64> {
     let mut sorted = values.to_vec();
     sorted.sort_by(f64::total_cmp);
@@ -74,8 +77,15 @@ fn median(values: &[f64]) -> Option<f64> {
 }
 
 impl State {
+    #[cfg(any(feature = "video", test))]
     fn feed_delay_ms(&self) -> f64 {
         self.fixed_feed_delay.or_else(|| median(&self.measurements)).unwrap_or(DEFAULT_FEED_DELAY_MS)
+    }
+
+    /// With no video, it's always the lag given.
+    #[cfg(not(any(feature = "video", test)))]
+    fn feed_delay_ms(&self) -> f64 {
+        self.fixed_feed_delay.unwrap_or(dampe_core::manual::DEFAULT_LAG_MS)
     }
 
     /// Adds a press that left the box `after_zero_ms` after the countdown's zero. Whether it counted.
@@ -119,13 +129,18 @@ fn path() -> Option<PathBuf> {
 pub struct Timing {
     state: Mutex<State>,
     /// Going by a lag given here, with no feed to measure a delay from.
+    #[cfg(feature = "video")]
     manual: std::sync::atomic::AtomicBool,
 }
 
 impl Timing {
     pub fn load() -> Self {
         let text = path().and_then(|path| std::fs::read_to_string(path).ok()).unwrap_or_default();
-        Self { state: Mutex::new(State::parse(&text)), manual: Default::default() }
+        Self {
+            state: Mutex::new(State::parse(&text)),
+            #[cfg(feature = "video")]
+            manual: Default::default(),
+        }
     }
 
     fn save(state: &State) {
@@ -154,6 +169,7 @@ impl Timing {
     /// With no video, how late presses are takes the place of the feed delay, for this run only.
     pub fn use_manual_lag(&self, milliseconds: f64) {
         self.fix_feed_delay(milliseconds);
+        #[cfg(feature = "video")]
         self.manual.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
@@ -176,16 +192,18 @@ impl Timing {
 
     pub fn describe(&self) -> String {
         let state = self.state.lock().unwrap();
-        if self.manual.load(std::sync::atomic::Ordering::Relaxed) {
-            return format!("Input {:.0} ms + lag {:.0} ms", state.platform.input_latency_ms(), state.feed_delay_ms());
+        #[cfg(feature = "video")]
+        if !self.manual.load(std::sync::atomic::Ordering::Relaxed) {
+            let source = match (state.fixed_feed_delay, state.measurements.len()) {
+                (Some(_), _) => "set by hand".to_owned(),
+                (None, 0) => "not measured yet".to_owned(),
+                (None, 1) => "from 1 press".to_owned(),
+                (None, presses) => format!("from {presses} presses"),
+            };
+            let (input, feed) = (state.platform.input_latency_ms(), state.feed_delay_ms());
+            return format!("Input {input:.0} ms + feed {feed:.0} ms ({source})");
         }
-        let source = match (state.fixed_feed_delay, state.measurements.len()) {
-            (Some(_), _) => "set by hand".to_owned(),
-            (None, 0) => "not measured yet".to_owned(),
-            (None, 1) => "from 1 press".to_owned(),
-            (None, presses) => format!("from {presses} presses"),
-        };
-        format!("Input {:.0} ms + feed {:.0} ms ({source})", state.platform.input_latency_ms(), state.feed_delay_ms())
+        format!("Input {:.0} ms + lag {:.0} ms", state.platform.input_latency_ms(), state.feed_delay_ms())
     }
 }
 

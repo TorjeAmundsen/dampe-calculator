@@ -7,7 +7,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use dampe_core::manual::{DEFAULT_LAG_MS, Event, GAME_FPS, ManualSession};
-use dampe_core::tracker::{Reading, Readings, Status};
+use dampe_core::reading::{Reading, Readings, Status};
 
 use crate::cues::{Log, start_countdown};
 use crate::gui::{self, Gui, Tone};

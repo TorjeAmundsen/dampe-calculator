@@ -9,6 +9,7 @@ pub const STATES: u32 = 1 << 23;
 const MASK: u32 = STATES - 1;
 
 /// Dampe's idle animation repeats after this many game frames: `gDampeRestAnim`'s `frameCount`.
+#[cfg(feature = "video")]
 pub const IDLE_LOOP_FRAMES: usize = 49;
 
 /// Draws on the dig's first dust frame before the roll: 3 for the position, 1 for the acceleration.
@@ -132,6 +133,7 @@ impl StateWalk {
     }
 
     /// The state after everything on `frame` ran. Frames must not go backwards.
+    #[cfg(feature = "video")]
     pub fn state_after(&mut self, frame: i64) -> u32 {
         loop {
             let link = self.blinks.link_next;

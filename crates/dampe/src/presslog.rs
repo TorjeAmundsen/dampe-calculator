@@ -9,10 +9,9 @@ use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
 use dampe_core::manual::FLIP_SECONDS;
+use dampe_core::reading::{CONFIRMATIONS, Candidate, Reading};
 use dampe_core::rng::flutter_len;
 use dampe_core::session::Event;
-use dampe_core::solver::Candidate;
-use dampe_core::tracker::{CONFIRMATIONS, Reading};
 
 /// Game frames are 50 ms, near enough for reporting.
 const GAME_FRAME_MS: f64 = 50.0;

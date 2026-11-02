@@ -8,9 +8,8 @@ use std::sync::mpsc::{Sender, channel};
 use std::time::{Duration, Instant};
 
 use dampe_core::picture::Luma;
+use dampe_core::reading::{Reading, Readings, Status};
 use dampe_core::session::{Event, Session};
-use dampe_core::tracker::Status;
-use dampe_core::tracker::{Reading, Readings};
 
 use crate::capture::{Capture, list_devices};
 use crate::cues::{Log, start_countdown};

@@ -2,6 +2,7 @@
 //! state only counts after it predicted further flutters it hadn't seen, and contradicting the
 //! video ends it.
 
+use crate::reading::{CONFIRMATIONS, Reading, Readings, Status, Window, first_window};
 use crate::rng::{BOX_GONE_TO_ROLL, StateWalk, flutter_len, rolls_heart_piece};
 use crate::solver::{Candidate, Match, Observation, SEARCH_MISSES, scan_from};
 
@@ -18,8 +19,6 @@ const MIN_HITS_TO_KEEP: u32 = 3;
 const FLUTTERS_BETWEEN_SCANS: usize = 3;
 /// Observations kept, about 3 minutes' worth with strays.
 const MAX_OBSERVATIONS: usize = 100;
-/// Flutters a reading must predict correctly before it's trusted.
-pub const CONFIRMATIONS: u32 = 2;
 /// A reading dies at this many of its flutters in a row that the video didn't show. Strays can't
 /// kill one, because the video really does show things that aren't flutters. A wrong reading can't
 /// keep hitting, so this ends it within a few seconds.
@@ -31,19 +30,6 @@ const HITS_PER_ALLOWED_MISS: u32 = 3;
 
 /// Game frames looked ahead for a Heart Piece.
 const HORIZON: i64 = 1200;
-
-/// What the tracker knows.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Status {
-    /// Collecting flutters: this many so far.
-    Collecting(usize),
-    /// A search ran and more than one state still fits.
-    Narrowing(usize),
-    /// A state fits, and has predicted this many flutters since.
-    Confirming(u32),
-    /// A state is trusted.
-    Locked,
-}
 
 /// How likely a read's parts are, for weighing readings against each other: a real flutter being
 /// read at all, not being read, and a stray landing exactly where a reading has nothing. Learning the
@@ -64,10 +50,6 @@ const LIKELY_READINGS: usize = 300;
 /// How far ahead an early window can be, in game frames.
 const LIKELY_HORIZON: i64 = 600;
 
-/// The chance every frame of an early window needs. On 10 RNG watch recordings, aiming at the middle
-/// of windows at 90% and up was right 51 of 52 times, 70-89% 23 of 26, and 60-69% only 5 of 9.
-pub const LIKELY_MIN_CONFIDENCE: f64 = 0.7;
-
 /// A window that probably gives the Heart Piece, before a state is proven.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LikelyWindow {
@@ -78,51 +60,6 @@ pub struct LikelyWindow {
     pub chance: f64,
     /// The most hits any reading has.
     pub best_hits: u32,
-}
-
-/// Game frames a dig can start to give the Heart Piece, for every remaining reading.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Window {
-    /// First and last game frames the dig's first dust can land on, inclusive.
-    pub first_roll: i64,
-    pub last_roll: i64,
-}
-
-impl Window {
-    /// The frame to aim for: its middle.
-    pub fn target(&self) -> i64 {
-        (self.first_roll + self.last_roll) / 2
-    }
-
-    /// The game frames the text box should disappear on, inclusive.
-    pub fn box_gone(&self) -> (i64, i64) {
-        (self.first_roll - BOX_GONE_TO_ROLL, self.last_roll - BOX_GONE_TO_ROLL)
-    }
-}
-
-/// A reading and how it's doing, for showing how the read works.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Reading {
-    pub candidate: Candidate,
-    /// The chance this is the real one, 0 to 1.
-    pub share: f64,
-    pub hits: u32,
-    pub misses: u32,
-    pub extras: u32,
-    /// Flutters it predicted before they were seen.
-    pub confirmed: u32,
-    /// When a dig next gives the Heart Piece for this reading alone, if that's soon.
-    pub next_window: Option<Window>,
-}
-
-/// The most likely readings.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Readings {
-    pub top: Vec<Reading>,
-    /// How many there are in all.
-    pub total: usize,
-    /// The chance the real one isn't among them at all, 0 to 1.
-    pub not_found: f64,
 }
 
 /// A reading being followed.
@@ -415,31 +352,10 @@ impl Tracker {
     }
 }
 
-/// The first time a dig gives the Heart Piece for all of `candidates`, from game frame `from` on, where
-/// the window is at least `min_frames` long, looking `horizon` ahead.
-pub(crate) fn first_window(candidates: &[Candidate], from: i64, min_frames: i64, horizon: i64) -> Option<Window> {
-    if candidates.is_empty() {
-        return None;
-    }
-    let mut walks: Vec<_> =
-        candidates.iter().map(|candidate| (StateWalk::new(candidate.blinks()), candidate.offset)).collect();
-    let mut run_start = None;
-    for frame in from..from + horizon {
-        let good = walks.iter_mut().all(|(walk, offset)| rolls_heart_piece(walk.state_for_roll(frame - *offset)));
-        if good {
-            run_start.get_or_insert(frame);
-        } else if let Some(start) = run_start.take()
-            && frame - start >= min_frames
-        {
-            return Some(Window { first_roll: start, last_roll: frame - 1 });
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reading::LIKELY_MIN_CONFIDENCE;
     use crate::rng::Blinks;
 
     fn flutters(seed: u32, link: i64, n: usize) -> Vec<Observation> {

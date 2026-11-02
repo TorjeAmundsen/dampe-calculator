@@ -8,9 +8,8 @@ use std::time::Instant;
 use dampe_core::manual::{
     CUE_LEAD_FRAMES, DEFAULT_LAG_MS, Followed, GAME_FPS, LIKELY_LEAD_FRAMES, ManualTracker, Press,
 };
+use dampe_core::reading::{Candidate, Status, Window};
 use dampe_core::rng::{Blinks, STATES, StateWalk, flutter_len, rolls_heart_piece};
-use dampe_core::solver::Candidate;
-use dampe_core::tracker::{Status, Window};
 
 use crate::presslog;
 

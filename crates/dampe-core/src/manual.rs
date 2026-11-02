@@ -8,9 +8,10 @@
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 
+use crate::reading::{
+    CONFIRMATIONS, Candidate, LIKELY_MIN_CONFIDENCE, Reading, Readings, Status, Window, first_window,
+};
 use crate::rng::{BOX_GONE_TO_ROLL, Blinks, STATES, StateWalk, flutter_len, rolls_heart_piece};
-use crate::solver::Candidate;
-use crate::tracker::{CONFIRMATIONS, LIKELY_MIN_CONFIDENCE, Reading, Readings, Status, Window, first_window};
 
 /// Game frames per second, which is all there is without video to measure it from.
 pub const GAME_FPS: f64 = 60000.0 / 1001.0 / 3.0;

@@ -6,6 +6,7 @@
 //! reading isn't compared to a chain. It draws its own flutters, and each one is looked up among
 //! what was seen.
 
+pub use crate::reading::Candidate;
 use crate::rng::{Blinks, STATES, flutter_len};
 
 /// Link's first draw comes on one of these frames after the first renewal.
@@ -35,20 +36,7 @@ pub struct Match {
     pub extras_since_hit: u32,
 }
 
-/// One reading of the observations. Model frames plus `offset` are game frames.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Candidate {
-    pub seed: u32,
-    pub link_first: i64,
-    pub offset: i64,
-}
-
 impl Candidate {
-    /// The model, at the renewal before the first observation.
-    pub fn blinks(&self) -> Blinks {
-        Blinks::new(self.seed, self.link_first)
-    }
-
     /// Compares this reading's flutters to `observations`, sorted by start, up to game frame `now`.
     pub fn compare(&self, observations: &[Observation], now: i64) -> Match {
         compare(self.blinks(), self.offset, observations, now, u32::MAX).expect("no limit on misses")
