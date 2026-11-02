@@ -6,7 +6,7 @@ You press a key for each burst of Dampe's blinks, it works out the game's RNG fr
 moment to press A. **It never sends any input to the game, and this version doesn't read video at all.** There's a separate
 build that reads the blinks from a video feed, described [below](#the-video-build).
 
-This is a pre-release, tested on one Wii VC setup, so expect rough edges, and please report what you find.
+It's been tested on one Wii VC setup, so expect rough edges, and please report what you find.
 
 ## What you need
 

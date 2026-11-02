@@ -746,7 +746,7 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
 name = "dampe"
-version = "0.1.0-pre.1"
+version = "1.0.0"
 dependencies = [
  "dampe-core",
  "fontique",
@@ -760,11 +760,11 @@ dependencies = [
 
 [[package]]
 name = "dampe-core"
-version = "0.1.0-pre.1"
+version = "1.0.0"
 
 [[package]]
 name = "dampe-web"
-version = "0.1.0-pre.1"
+version = "1.0.0"
 dependencies = [
  "dampe-core",
 ]
