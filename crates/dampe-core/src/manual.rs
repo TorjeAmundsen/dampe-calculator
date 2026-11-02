@@ -47,8 +47,10 @@ const FOUR_AS_THREE: f64 = 1.7;
 const BASE_LIMIT: f64 = 8.0;
 const LIMIT_PER_PRESS: f64 = 1.3;
 
-/// Presses before a scan: fewer leaves too many readings to follow.
-const SCAN_PRESSES: usize = 7;
+/// Presses before a scan: fewer leaves too many readings to follow. At 7, up to 13 million fit, and
+/// keeping the cheapest [`MAX_FOLLOWED`] lost the real one on 5 of 40 simulated reads at the spread
+/// measured on 4s, against none of 40 at 9. A lock needs more presses than this anyway.
+const SCAN_PRESSES: usize = 9;
 /// Presses between scans while nothing fits. The first press of a scan has to be a real flutter.
 const PRESSES_BETWEEN_SCANS: usize = 3;
 /// Readings followed after a scan, the cheapest ones.
@@ -536,6 +538,8 @@ pub enum Event {
     },
     /// A likely cue isn't likely any more.
     LikelyCancelled,
+    /// A likely cue's last frame went by, with nothing to take its place.
+    LikelyEnded,
     /// A cue isn't valid any more: the presses contradicted it.
     CueCancelled,
 }
@@ -749,8 +753,12 @@ impl ManualSession {
         }
         if self.likely_cue != new_likely {
             let doubted = self.likely_cue.is_some_and(|window| still_ahead(&window, now));
-            if self.likely_cue.take().is_some() && doubted && (new_likely.is_some() || update.window.is_none()) {
-                events.push(Event::LikelyCancelled);
+            if self.likely_cue.take().is_some() {
+                if doubted && (new_likely.is_some() || update.window.is_none()) {
+                    events.push(Event::LikelyCancelled);
+                } else if !doubted && new_likely.is_none() && update.window.is_none() {
+                    events.push(Event::LikelyEnded);
+                }
             }
             if let Some((window, chance)) = update_likely {
                 self.likely_cue = Some(window);
@@ -958,7 +966,7 @@ mod tests {
             if i == 9 {
                 assert!(session.press(3, seconds + 0.5), "either key flips");
             }
-            // Each press is judged before the next. The scan at the seventh takes a while
+            // Each press is judged before the next, and a scan takes a while
             let mut updates = 0;
             let started = std::time::Instant::now();
             while i >= 6 && updates == 0 {
@@ -993,6 +1001,38 @@ mod tests {
         assert!(next_seconds > cue_seconds, "{next_seconds} {cue_seconds}");
         session.restart();
         assert_eq!(session.presses(), 0);
+    }
+
+    /// What's said as a likely cue goes away, with its window from frame 100 to 112.
+    fn events_as_a_likely_cue_goes(now: f64, window: Option<Window>) -> Vec<Event> {
+        let mut session = ManualSession::new();
+        session.likely_cue = Some(Window { first_roll: 100, last_roll: 112 });
+        let status = session.status.clone();
+        let mut events = Vec::new();
+        session.apply(
+            Update { generation: 0, status, readings: Readings::default(), window, likely: None },
+            now,
+            &mut events,
+        );
+        events
+    }
+
+    /// Nothing else says the moment is over, and the window would go on showing its chance.
+    #[test]
+    fn a_likely_cue_that_went_by_says_so() {
+        assert_eq!(events_as_a_likely_cue_goes(1000.0, None), [Event::LikelyEnded]);
+    }
+
+    #[test]
+    fn a_likely_cue_still_ahead_is_cancelled_and_not_ended() {
+        assert_eq!(events_as_a_likely_cue_goes(0.0, None), [Event::LikelyCancelled]);
+    }
+
+    /// The status has to be locked for a certain cue, so this only says nothing's ended.
+    #[test]
+    fn a_certain_cue_taking_over_is_not_an_end() {
+        let window = Window { first_roll: 100, last_roll: 112 };
+        assert!(!events_as_a_likely_cue_goes(1000.0, Some(window)).contains(&Event::LikelyEnded));
     }
 
     /// Flutters after the last press may just not have been pressed yet.

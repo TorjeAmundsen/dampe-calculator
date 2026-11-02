@@ -24,6 +24,10 @@ const READINGS_REFRESH: Duration = Duration::from_millis(100);
 
 const WAITING: &str = "Talk to Dampe, and start pressing once Navi is done";
 
+fn tone(status: &Status) -> Tone {
+    if *status == Status::Locked { Tone::Locked } else { Tone::Reading }
+}
+
 fn describe(status: &Status) -> String {
     match status {
         Status::Collecting(n) => format!("{n} flutters so far"),
@@ -112,6 +116,7 @@ fn read(
     let mut readings_shown = Readings::default();
     let mut last_readings = Instant::now();
     let mut shown_percent = 0;
+    let mut status = Status::Collecting(0);
 
     loop {
         // Presses are stamped when they're made, so waiting here doesn't change their time
@@ -120,6 +125,7 @@ fn read(
         if start_over.swap(false, Ordering::Relaxed) | start_over_key.swap(false, Ordering::Relaxed) {
             cancel(&mut countdown);
             session.restart();
+            status = Status::Collecting(0);
             gui.set_cue(None);
             gui.set_likely(None);
             gui.set_latest(String::new());
@@ -157,10 +163,10 @@ fn read(
 
         for event in events.drain(..) {
             match event {
-                Event::Status(status) => {
+                Event::Status(new) => {
+                    status = new;
                     log.line(describe(&status));
-                    let tone = if status == Status::Locked { Tone::Locked } else { Tone::Reading };
-                    gui.set_status(describe(&status), tone);
+                    gui.set_status(describe(&status), tone(&status));
                 }
                 Event::Cue { seconds: box_seconds, window } => {
                     let at_seconds = box_seconds - timing.lead_ms() / 1000.0;
@@ -176,6 +182,8 @@ fn read(
                     countdown = Some(start_countdown(at, sound.clone()));
                     gui.set_cue(Some(at));
                     gui.set_likely(None);
+                    // A likely cue this took over from may have left its chance up
+                    gui.set_status(describe(&status), tone(&status));
                 }
                 Event::LikelyCue { seconds: box_seconds, chance } => {
                     let at_seconds = box_seconds - timing.lead_ms() / 1000.0;
@@ -207,6 +215,11 @@ fn read(
                     gui.set_cue(None);
                     gui.set_likely(None);
                     gui.set_status("Keep pressing".to_owned(), Tone::Reading);
+                }
+                // The window takes the countdown down by itself, right after the moment to press
+                Event::LikelyEnded => {
+                    gui.set_likely(None);
+                    gui.set_status(describe(&status), tone(&status));
                 }
                 Event::CueCancelled => {
                     cancel(&mut countdown);
