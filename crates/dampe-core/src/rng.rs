@@ -66,6 +66,13 @@ pub fn rolls_heart_piece(state: u32) -> bool {
     f64::from(unit(state)) >= HEART_PIECE_LUCK
 }
 
+/// Dampe stays frozen this much longer than the time between the Ocarina's two presses, the most common
+/// value measured from gz's input display and the RNG watch. It was 0 to 2 on 8 freezes with one
+/// Ocarina press, for reasons not known.
+pub const FREEZE_EXTRA_FRAMES: i64 = 2;
+/// How much less than [`FREEZE_EXTRA_FRAMES`] it can be.
+pub const FREEZE_EXTRA_SPREAD: i64 = 2;
+
 /// One step of the blink model. Game frames count from the renewal before the first flutter, and
 /// Link's update runs before Dampe's within a frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,6 +126,29 @@ impl Blinks {
         self.renewal = start + flutter_len(count);
         ModelFlutter { start, count }
     }
+
+    /// Runs everything up to and including `frame`.
+    pub fn run_through(&mut self, frame: i64) {
+        loop {
+            if self.link_next <= frame && self.link_next <= self.renewal {
+                self.link_draw();
+            } else if self.renewal <= frame {
+                self.next_flutter();
+            } else {
+                return;
+            }
+        }
+    }
+
+    /// The Ocarina being out, from pressing its button on `enter` to pressing B on `leave`: only Link's
+    /// timer runs. Dampe's renewal moves back by the frames between the presses plus
+    /// [`FREEZE_EXTRA_FRAMES`]. `run_through(enter)` has to have come first.
+    pub fn freeze_dampe(&mut self, enter: i64, leave: i64) {
+        while self.link_next <= leave {
+            self.link_draw();
+        }
+        self.renewal += leave - enter + FREEZE_EXTRA_FRAMES;
+    }
 }
 
 /// The RNG state after each frame from a known point. Frames with no draw repeat the last one.
@@ -152,17 +182,8 @@ impl StateWalk {
     /// The state after everything on `frame` ran. Frames must not go backwards.
     #[cfg(feature = "video")]
     pub fn state_after(&mut self, frame: i64) -> u32 {
-        loop {
-            let link = self.blinks.link_next;
-            let dampe = self.blinks.renewal;
-            if link <= frame && link <= dampe {
-                self.blinks.link_draw();
-            } else if dampe <= frame {
-                self.blinks.next_flutter();
-            } else {
-                return self.blinks.state;
-            }
-        }
+        self.blinks.run_through(frame);
+        self.blinks.state
     }
 }
 

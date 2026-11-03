@@ -114,6 +114,30 @@ pub(crate) fn first_window(candidates: &[Candidate], from: i64, min_frames: i64,
     None
 }
 
+/// The widest part of a likely `window` with the same target that is `certain`, at least `min_frames`
+/// long, so a proven state can turn its countdown green without moving it. A lock can still leave
+/// readings that differ in when Link next blinks, which only changes a window's edges.
+pub(crate) fn certain_part(window: Window, min_frames: i64, certain: impl Fn(Window) -> bool) -> Option<Window> {
+    let target = window.target();
+    let widest = (target - window.first_roll).min(window.last_roll - target);
+    (min_frames / 2..=widest)
+        .rev()
+        .map(|half| Window { first_roll: target - half, last_roll: target + half })
+        .find(|part| certain(*part))
+}
+
+/// Whether every frame of `window` gives the Heart Piece for every one of `candidates`, which is what a
+/// green cue promises. Weighing readings by how well they fit isn't enough: one that fits a little worse
+/// can still be the real one.
+pub(crate) fn rolls_for_all(candidates: &[Candidate], window: Window) -> bool {
+    !candidates.is_empty()
+        && candidates.iter().all(|candidate| {
+            let mut walk = StateWalk::new(candidate.blinks());
+            (window.first_roll..=window.last_roll)
+                .all(|frame| rolls_heart_piece(walk.state_for_roll(frame - candidate.offset)))
+        })
+}
+
 /// Runs `scan` over every state, split up between half of the cores, since the read has to run beside
 /// OBS, and puts together what it finds.
 #[cfg(not(target_arch = "wasm32"))]
@@ -186,5 +210,29 @@ mod tests {
         assert_eq!(first_likely_window(&chances, 100, 3, 0.7), window(102, 104), "the first is too short");
         assert_eq!(first_likely_window(&chances, 100, 1, 0.7), window(100, 100));
         assert_eq!(first_likely_window(&chances, 100, 3, 0.85), None, "what runs off the end isn't known to be long");
+    }
+
+    /// The case from a real read: locked, with the last 4 frames still depending on Link's next blink.
+    #[test]
+    fn a_proven_part_keeps_the_target_and_drops_the_doubtful_edge() {
+        let window = Window { first_roll: 1040, last_roll: 1065 };
+        let part = certain_part(window, 13, |part| part.last_roll <= 1061).expect("no part");
+        assert_eq!(part, Window { first_roll: 1043, last_roll: 1061 });
+        assert_eq!(part.target(), window.target());
+        assert_eq!(certain_part(window, 13, |part| part.last_roll <= 1047), None, "the target itself isn't proven");
+    }
+
+    /// A reading that fits worse still has to get the Heart Piece for the window to count.
+    #[test]
+    fn every_reading_has_to_roll_the_heart_piece() {
+        let real = Candidate { seed: 3_141_592, link_first: 40, offset: 0 };
+        let window = first_window(&[real], 0, 13, HORIZON).expect("no window");
+        assert!(rolls_for_all(&[real], window));
+        let other = (1..100)
+            .map(|link_first| Candidate { link_first, ..real })
+            .find(|other| !rolls_for_all(&[*other], window))
+            .expect("every Link phase rolls it");
+        assert!(!rolls_for_all(&[real, other], window));
+        assert!(!rolls_for_all(&[], window), "nothing proven promises nothing");
     }
 }

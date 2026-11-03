@@ -1,12 +1,14 @@
 //! `dampe live`: reads a video device and tells you when to press A. It reads video and makes
 //! sounds, nothing else.
 
+use std::collections::VecDeque;
 use std::io::BufRead;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::time::{Duration, Instant};
 
+use dampe_core::ocarina::Plan;
 use dampe_core::picture::Luma;
 use dampe_core::reading::{Reading, Readings, Status};
 use dampe_core::session::{Event, Session};
@@ -79,7 +81,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let capture = Capture::open(&device, true).map_err(|e| format!("couldn't open '{device}': {e}"))?;
     let description = format!("{device}: {}x{}", capture.size.0, capture.size.1);
     logfile::line(&description);
-    logfile::line("Talk to Dampe: it starts reading from his first text box and waits for Navi by itself.");
+    logfile::line("Talk to Dampé: it starts reading from his first text box and waits for Navi by itself.");
     if cfg!(not(feature = "windowed")) {
         logfile::line("Press Enter here or Start over in the window after a new talk, or a new camera angle.");
     }
@@ -93,7 +95,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         crate::show_error(&error);
     });
     logfile::line(format_args!(
-        "If the box opened right away because you've talked to Dampe before, it waits for Navi by itself. {navi_key} forces a start, and is only for when it doesn't start or doesn't see Navi finish."
+        "If the box opened right away because you've talked to Dampé before, it waits for Navi by itself. {navi_key} forces a start, and is only for when it doesn't start or doesn't see Navi finish."
     ));
     let (press_sender, press_log) = match press_log_path {
         Some(_) if !window => return Err("--log-presses takes the window, which hears the keys".to_owned()),
@@ -126,6 +128,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         hotkey_name: navi_key,
         presses: press_sender,
         manual: None,
+        ocarina: manuallive::load_ocarina_on(),
     };
     gui::run(options, move |gui, start_over| {
         if let Err(error) = read(capture, &device, timing, Some(gui), start_over, navi_gone, sound, press_log) {
@@ -178,6 +181,21 @@ fn read(
     let mut last_report = Instant::now();
     let mut eye_found = false;
     let mut shown_percent = 0;
+    let use_ocarina = Arc::new(AtomicBool::new(manuallive::load_ocarina_on()));
+    if let Some(gui) = &gui {
+        let changed = use_ocarina.clone();
+        gui.on_ocarina_changed(move |on| {
+            manuallive::save_ocarina_on(on);
+            changed.store(on, Ordering::Relaxed);
+        });
+    }
+    // The plan on offer, and the steps left of the one being followed, with their moments to press in
+    // seconds since `started`. While following, the text closing and his box coming back are part of the
+    // plan, so what the read says about them is left out.
+    let mut offered: Option<Plan> = None;
+    let mut steps: VecDeque<(&'static str, f64)> = VecDeque::new();
+    // A plan's steps ran out before its box left, which the feed's delay makes usual
+    let mut followed_plan = false;
 
     loop {
         if restart.try_recv().is_ok() || start_over.swap(false, Ordering::Relaxed) {
@@ -185,6 +203,9 @@ fn read(
                 let _ = cancel.send(());
             }
             cue_at = None;
+            offered = None;
+            steps.clear();
+            followed_plan = false;
             flutters = 0;
             eye_found = false;
             session.restart();
@@ -203,6 +224,9 @@ fn read(
                 let _ = cancel.send(());
             }
             cue_at = None;
+            offered = None;
+            steps.clear();
+            followed_plan = false;
             flutters = 0;
             session.start_now();
             if let Some(press_log) = &mut press_log {
@@ -305,9 +329,59 @@ fn read(
                 health.tracks,
             ));
         }
+        let lead = timing.lead_ms() / 1000.0;
+        if use_ocarina.load(Ordering::Relaxed)
+            && let Some(plan) = offered.take()
+        {
+            log.line(format_args!("Following the Ocarina plan: {plan:?}"));
+            followed_plan = true;
+            steps = manuallive::ocarina_steps(&plan, |frame| session.seconds_at(frame))
+                .map(|(text, at)| (text, at - lead))
+                .into();
+            let (text, at_seconds) = steps[0];
+            let at = started + Duration::from_secs_f64(at_seconds.max(0.0));
+            if let Some(cancel) = countdown.replace(start_countdown(at, sound.clone())) {
+                let _ = cancel.send(());
+            }
+            cue_at = None;
+            if let Some(gui) = &gui {
+                let frames = plan.window.last_roll - plan.window.first_roll + 1;
+                gui.set_cue(Some(at));
+                gui.set_likely(None);
+                gui.set_margin(frames as f64 / session.fps() / 2.0 * 1000.0);
+                gui.set_status(text.to_owned(), Tone::Locked);
+                gui.set_latest("Ocarina: Heart Piece sooner".to_owned());
+            }
+        }
+        if steps.front().is_some_and(|&(_, at)| at <= started.elapsed().as_secs_f64()) {
+            steps.pop_front();
+            if let Some(&(text, at_seconds)) = steps.front() {
+                let at = started + Duration::from_secs_f64(at_seconds.max(0.0));
+                if let Some(cancel) = countdown.replace(start_countdown(at, sound.clone())) {
+                    let _ = cancel.send(());
+                }
+                // The last one is an ordinary press on Yes, so the box leaving can be timed against it
+                if steps.len() == 1 {
+                    cue_at = Some(at_seconds);
+                }
+                if let Some(gui) = &gui {
+                    gui.set_cue(Some(at));
+                    gui.set_status(text.to_owned(), Tone::Locked);
+                }
+            }
+        }
         for event in events.drain(..) {
             if let Some(press_log) = &mut press_log {
                 press_log.event(&event);
+            }
+            // Only the box leaving after the Yes counts while a plan is followed
+            if !steps.is_empty() && !(steps.len() == 1 && matches!(event, Event::BoxGone { .. })) {
+                continue;
+            }
+            let after_plan = !steps.is_empty() || followed_plan;
+            if matches!(event, Event::BoxGone { .. }) {
+                steps.clear();
+                followed_plan = false;
             }
             match event {
                 Event::NaviDone { held, .. } => {
@@ -362,7 +436,7 @@ fn read(
                     if let Some(gui) = &gui {
                         gui.clear_cue();
                         gui.set_status(
-                            "Talk to Dampe: reading starts by itself at his first text box".to_owned(),
+                            "Talk to Dampé: reading starts by itself at his first text box".to_owned(),
                             Tone::Reading,
                         );
                     }
@@ -388,7 +462,11 @@ fn read(
                         gui.set_status(describe(&status), tone);
                     }
                 }
-                Event::Cue { seconds: box_seconds, window, .. } => {
+                Event::Cue { seconds: box_seconds, window, box_frame } => {
+                    logfile::to_file(format_args!(
+                        "cue: box leaves on game frame {box_frame}, window {}..={}",
+                        window.first_roll, window.last_roll
+                    ));
                     let at_seconds = box_seconds - timing.lead_ms() / 1000.0;
                     let at = started + Duration::from_secs_f64(at_seconds.max(0.0));
                     let frames = window.last_roll - window.first_roll + 1;
@@ -404,9 +482,15 @@ fn read(
                     if let Some(gui) = &gui {
                         gui.set_cue(Some(at));
                         gui.set_likely(None);
+                        // A likely cue's percentage would otherwise stay up over it
+                        gui.set_status("Locked: follow the countdown".to_owned(), Tone::Locked);
                     }
                 }
-                Event::LikelyCue { seconds: box_seconds, chance, .. } => {
+                Event::LikelyCue { seconds: box_seconds, chance, box_frame, window } => {
+                    logfile::to_file(format_args!(
+                        "likely cue: box leaves on game frame {box_frame}, window {}..={}",
+                        window.first_roll, window.last_roll
+                    ));
                     let at_seconds = box_seconds - timing.lead_ms() / 1000.0;
                     let at = started + Duration::from_secs_f64(at_seconds.max(0.0));
                     let percent = ((chance * 100.0).round() as u32).min(99);
@@ -458,11 +542,15 @@ fn read(
                     cue_at = None;
                     log.line(format_args!("Cancelled: the video stopped matching. Don't press yet."));
                 }
-                Event::BoxGone { seconds: gone, heart_piece, .. } => {
+                Event::BoxGone { seconds: gone, heart_piece, game_frame } => {
+                    logfile::to_file(format_args!(
+                        "box left on game frame {game_frame}, dig rolls on {}",
+                        game_frame + dampe_core::rng::BOX_GONE_TO_ROLL
+                    ));
                     if let Some(gui) = &gui {
                         gui.clear_cue();
                         gui.set_status(
-                            "Talk to Dampe: reading starts by itself at his first text box".to_owned(),
+                            "Talk to Dampé: reading starts by itself at his first text box".to_owned(),
                             Tone::Reading,
                         );
                     }
@@ -488,6 +576,7 @@ fn read(
                         }
                     }
                     match heart_piece {
+                        _ if after_plan => log.line("That was the Ocarina plan's Yes."),
                         Some(true) => log.line(format_args!("That press should give the Heart Piece.")),
                         Some(false) => log.line(format_args!("That press shouldn't give the Heart Piece.")),
                         None => log.line(format_args!("The box left before a state was found.")),
@@ -495,6 +584,7 @@ fn read(
                     flutters = 0;
                     log.line("Waiting for the next text box.");
                 }
+                Event::Ocarina(plan) => offered = plan,
             }
         }
     }

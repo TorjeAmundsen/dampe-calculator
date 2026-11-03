@@ -347,7 +347,7 @@ component ReadingCard inherits Rectangle {
 // } video
 
 export component MainWindow inherits Window {
-    title: "Dampe Calculator";
+    title: "Dampé Calculator";
     // Pressing fits the gap beside a 4:3 game on a 1920x1080 stream, at 4:3 itself
     preferred-width: root.manual ? 480px : 720px;
     preferred-height: root.manual ? 320px : 640px;
@@ -363,7 +363,7 @@ export component MainWindow inherits Window {
     in property <GameRect> eye;
     in property <bool> has-eye;
     in property <bool> blinking;
-    in property <string> status: "Talk to Dampe: reading starts by itself at his first text box";
+    in property <string> status: "Talk to Dampé: reading starts by itself at his first text box";
     // } video
     // plain {
     in property <string> status;
@@ -407,6 +407,8 @@ export component MainWindow inherits Window {
     in property <bool> global-keys-available;
     // Keys 3 and 4 work from any program, while nothing else gets them
     in-out property <bool> global-keys: true;
+    // Plans with the Ocarina are followed when they beat waiting
+    in-out property <bool> ocarina: true;
     // Room for the frame's thickest border around the picture
     property <length> feed-border: 6px;
     // The list always gets at least this much, for a window that's wide but not tall
@@ -419,6 +421,7 @@ export component MainWindow inherits Window {
     callback hotkey-pressed();
     callback flutter-pressed(int);
     callback global-keys-changed(bool);
+    callback ocarina-changed(bool);
     callback open-log();
     callback platform-changed();
     callback sound-changed();
@@ -679,6 +682,15 @@ export component MainWindow inherits Window {
                             root.volume-released();
                         }
                     }
+
+                    CheckBox {
+                        text: "Ocarina";
+                        horizontal-stretch: 0;
+                        checked <=> root.ocarina;
+                        toggled => {
+                            root.ocarina-changed(self.checked);
+                        }
+                    }
                 }
 
                 HorizontalLayout {
@@ -708,7 +720,7 @@ export component MainWindow inherits Window {
                 }
 
                 Text {
-                    text: "Reading starts by itself at Dampe's first text box. Force start is only for when it doesn't.";
+                    text: "Reading starts by itself at Dampé's first text box. Force start is only for when it doesn't.";
                     color: Colors.secondary;
                     font-size: 11px;
                     wrap: word-wrap;
@@ -877,6 +889,15 @@ export component MainWindow inherits Window {
                             value <=> root.volume;
                             released(_) => {
                                 root.volume-released();
+                            }
+                        }
+
+                        CheckBox {
+                            text: "Ocarina";
+                            horizontal-stretch: 0;
+                            checked <=> root.ocarina;
+                            toggled => {
+                                root.ocarina-changed(self.checked);
                             }
                         }
                     }

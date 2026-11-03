@@ -74,7 +74,7 @@ fn show_error(error: &str) -> bool {
     if !IN_TERMINAL.load(std::sync::atomic::Ordering::Relaxed) {
         use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
         use windows::core::{HSTRING, w};
-        unsafe { MessageBoxW(None, &HSTRING::from(error), w!("Dampe Calculator"), MB_OK | MB_ICONERROR) };
+        unsafe { MessageBoxW(None, &HSTRING::from(error), w!("Dampé Calculator"), MB_OK | MB_ICONERROR) };
         return true;
     }
     let _ = error;

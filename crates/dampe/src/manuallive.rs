@@ -7,13 +7,14 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use dampe_core::manual::{DEFAULT_LAG_MS, Event, GAME_FPS, ManualSession};
+use dampe_core::ocarina::Plan;
 use dampe_core::reading::{Reading, Readings, Status, Window};
 
 use crate::cues::{Log, start_countdown};
 use crate::gui::{self, Gui, Tone};
 use crate::hotkey::{self, CountKeys};
 use crate::logfile;
-use crate::sound::Sound;
+use crate::sound::{self, Sound};
 use crate::timing::{Platform, Timing};
 
 const DEFAULT_START_OVER_KEY: &str = "F8";
@@ -25,7 +26,7 @@ const READINGS_REFRESH: Duration = Duration::from_millis(100);
 /// What `--lag-ms` takes: earlier than the flutter's end is possible, by someone anticipating it.
 const LAG_RANGE_MS: std::ops::RangeInclusive<f64> = -500.0..=2000.0;
 
-const WAITING: &str = "Talk to Dampe, then press once Navi is done";
+const WAITING: &str = "Talk to Dampé, then press once Navi is done";
 /// Counts shown of the last presses, enough to catch a wrong one.
 const RECENT_PRESSES: usize = 6;
 
@@ -115,10 +116,30 @@ pub fn run(args: &[String]) -> Result<(), String> {
         hotkey_name: key_name,
         presses: Some(press_sender.clone()),
         manual: Some(gui::ManualStart { status: WAITING.to_owned(), global_keys: hotkey::load_count_keys_on() }),
+        ocarina: load_ocarina_on(),
     };
-    gui::run(options, move |gui, start_over| {
-        read(presses, press_sender, timing, gui, start_over, start_over_key, sound)
-    })
+    gui::run(options, move |gui, start_over| read(presses, press_sender, timing, gui, start_over, start_over_key, sound))
+}
+
+/// Whether to follow plans with the Ocarina, from what's saved. On unless turned off.
+fn ocarina_on(text: &str) -> bool {
+    !text.lines().any(|line| line.trim() == "ocarina=off")
+}
+
+fn ocarina_path() -> Option<std::path::PathBuf> {
+    Some(crate::config_dir()?.join("ocarina.txt"))
+}
+
+pub(crate) fn load_ocarina_on() -> bool {
+    ocarina_on(&ocarina_path().and_then(|path| std::fs::read_to_string(path).ok()).unwrap_or_default())
+}
+
+pub(crate) fn save_ocarina_on(on: bool) {
+    let Some(path) = ocarina_path() else { return };
+    if let Some(folder) = path.parent() {
+        let _ = std::fs::create_dir_all(folder);
+    }
+    let _ = std::fs::write(path, format!("ocarina={}\n", if on { "on" } else { "off" }));
 }
 
 /// Stops a countdown, if one is running.
@@ -126,6 +147,16 @@ fn cancel(countdown: &mut Option<Sender<()>>) {
     if let Some(cancel) = countdown.take() {
         let _ = cancel.send(());
     }
+}
+
+/// What to do for `plan`, each with when its press has to reach the game, from `seconds` of a game frame.
+pub(crate) fn ocarina_steps(plan: &Plan, seconds: impl Fn(i64) -> f64) -> [(&'static str, f64); 3] {
+    let (first, last) = plan.window.box_gone();
+    [
+        ("Say No and pull Ocarina", seconds(plan.press_no())),
+        ("Cancel Ocarina and talk to Dampé", seconds(plan.leave)),
+        ("Press A on Yes", seconds((first + last) / 2)),
+    ]
 }
 
 fn read(
@@ -162,7 +193,18 @@ fn read(
         hotkey::save_count_keys_on(on);
         count_keys.set_on(on);
     });
+    let use_ocarina = Arc::new(AtomicBool::new(load_ocarina_on()));
+    let changed_ocarina = use_ocarina.clone();
+    gui.on_ocarina_changed(move |on| {
+        save_ocarina_on(on);
+        changed_ocarina.store(on, Ordering::Relaxed);
+    });
+    // The plan on offer, and the steps left of the one being followed, with their moments to press
+    let mut offered: Option<Plan> = None;
+    let mut steps: std::collections::VecDeque<(&'static str, Instant)> = Default::default();
     let mut session = ManualSession::new(timing.lead_ms() / 1000.0);
+    // Plans are looked for either way, so turning it on can use one right away
+    session.use_ocarina();
     let mut events = Vec::new();
     let mut countdown: Option<Sender<()>> = None;
     let mut readings_shown = Readings::default();
@@ -187,6 +229,8 @@ fn read(
             session.restart();
             status = Status::Collecting(0);
             cue_at = None;
+            offered = None;
+            steps.clear();
             gui.clear_cue();
             counts.clear();
             gui.set_recent(String::new());
@@ -197,7 +241,10 @@ fn read(
         if let Ok((count, at)) = press {
             let at = at.saturating_duration_since(started).as_secs_f64();
             logfile::to_file(format_args!("press {count} {at:.3}"));
-            if session.press(count, at) {
+            if !steps.is_empty() {
+                // Flutters can't change a plan being followed, and a new read would write over its prompts
+                logfile::to_file("press ignored: following the Ocarina");
+            } else if session.press(count, at) {
                 if let Some(last) = counts.last_mut() {
                     *last = 7 - *last;
                     gui.set_latest(format!("Flutter {}: now {last}", session.presses()));
@@ -210,6 +257,42 @@ fn read(
                 }
             }
             gui.set_recent(recent_text(&counts));
+        }
+
+        // Dampe's flutters move once this is followed, so what's been read stops being any use
+        if use_ocarina.load(Ordering::Relaxed)
+            && let Some(plan) = offered.take()
+        {
+            log.line(format_args!("Following the Ocarina plan: {plan:?}"));
+            session.restart();
+            status = Status::Collecting(0);
+            cue_at = None;
+            cancel(&mut countdown);
+            gui.clear_cue();
+            gui.set_likely(None);
+            counts.clear();
+            gui.set_recent(String::new());
+            gui.set_latest("Ocarina: Heart Piece sooner".to_owned());
+            let steps_at = ocarina_steps(&plan, |frame| frame as f64 / GAME_FPS);
+            steps = steps_at.map(|(text, at)| (text, moment_to_press(at).1)).into();
+            gui.set_margin(margin_ms(&plan.window));
+            let (text, at) = steps[0];
+            countdown = Some(start_countdown(at, sound.clone()));
+            gui.set_cue(Some(at));
+            gui.set_status(text.to_owned(), Tone::Locked);
+        }
+        if steps.front().is_some_and(|&(_, at)| at <= Instant::now()) {
+            steps.pop_front();
+            if let Some(&(text, at)) = steps.front() {
+                cancel(&mut countdown);
+                countdown = Some(start_countdown(at, sound.clone()));
+                gui.set_cue(Some(at));
+                gui.set_status(text.to_owned(), Tone::Locked);
+                // Nothing here can see the dig at the end of the last one
+                if steps.len() == 1 {
+                    cue_at = Some(at);
+                }
+            }
         }
 
         // Nothing here can see a dig, and it ends what's been read
@@ -240,6 +323,10 @@ fn read(
         for event in events.drain(..) {
             match event {
                 Event::Status(new) => {
+                    // Says no more flutters are needed, to someone whose eyes are on his
+                    if new == Status::Locked && status != Status::Locked {
+                        sound.cue_in_background(&sound::LOCKED);
+                    }
                     status = new;
                     log.line(describe(&status));
                     // For bug reports, since the window doesn't show them
@@ -303,6 +390,7 @@ fn read(
                     gui.clear_cue();
                     gui.set_status("Cancelled: don't press yet".to_owned(), Tone::Warning);
                 }
+                Event::Ocarina(plan) => offered = plan,
             }
         }
     }
@@ -311,6 +399,13 @@ fn read(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ocarina_is_on_unless_turned_off() {
+        assert!(ocarina_on(""));
+        assert!(ocarina_on("ocarina=on\n"));
+        assert!(!ocarina_on("ocarina=off\n"));
+    }
 
     #[test]
     fn a_lag_has_to_be_a_time_that_can_be_worked_with() {

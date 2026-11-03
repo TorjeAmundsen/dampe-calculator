@@ -13,11 +13,14 @@ use windows::core::PCWSTR;
 
 const SAMPLE_RATE: u32 = 44100;
 const DEFAULT_VOLUME: u8 = 50;
-/// A short fade at each end, so a tone doesn't start or stop with a click.
-const FADE_SAMPLES: usize = 220;
+/// A fade at each end, so a tone doesn't start or stop with a crackle: 15 ms. 5 ms in a straight line
+/// still crackled.
+const FADE_SAMPLES: usize = SAMPLE_RATE as usize * 15 / 1000;
 
 pub const TICK: (u32, u32) = (880, 120);
 pub const GO: (u32, u32) = (1760, 400);
+/// Two notes rising a fifth, unlike the countdown: a state is proven, so no more flutters are needed.
+pub const LOCKED: [(u32, u32); 2] = [(660, 110), (990, 180)];
 
 /// A mono 16-bit WAV file of a sine tone. Volume is 0 to 100, and sounds about even across that.
 fn tone(frequency: u32, milliseconds: u32, volume: u8) -> Vec<u8> {
@@ -39,7 +42,9 @@ fn tone(frequency: u32, milliseconds: u32, volume: u8) -> Vec<u8> {
     let share = f32::from(volume.min(100)) / 100.0;
     let amplitude = share * share * f32::from(i16::MAX);
     for i in 0..samples {
-        let fade = (i.min(samples - 1 - i) as f32 / FADE_SAMPLES as f32).min(1.0);
+        // Eased in and out along half a cosine, which has no corner where it reaches full volume
+        let along = (i.min(samples - 1 - i) as f32 / FADE_SAMPLES as f32).min(1.0);
+        let fade = 0.5 - 0.5 * (along * std::f32::consts::PI).cos();
         let phase = i as f32 * frequency as f32 / SAMPLE_RATE as f32 * std::f32::consts::TAU;
         wav.extend_from_slice(&((phase.sin() * amplitude * fade) as i16).to_le_bytes());
     }
@@ -139,6 +144,19 @@ impl Sound {
             play(tone, self.volume());
         }
     }
+
+    /// Plays `tones` one after another if the sound is on, without waiting for them.
+    pub fn cue_in_background(&self, tones: &'static [(u32, u32)]) {
+        if !self.enabled() {
+            return;
+        }
+        let volume = self.volume();
+        std::thread::spawn(move || {
+            for &tone in tones {
+                play(tone, volume);
+            }
+        });
+    }
 }
 
 #[cfg(test)]
@@ -163,6 +181,21 @@ mod tests {
         let (half, full) = (peak(&tone(880, 100, 50)), peak(&tone(880, 100, 100)));
         assert!(full > 30000, "{full}");
         assert!(half > full / 5 && half < full / 3, "{half} against {full}");
+    }
+
+    /// Starting or stopping at full volume crackles.
+    #[test]
+    fn a_tone_eases_in_and_out() {
+        let wav = tone(880, 120, 100);
+        let samples: Vec<i32> =
+            wav[44..].as_chunks::<2>().0.iter().map(|&s| i32::from(i16::from_le_bytes(s)).abs()).collect();
+        let near_end = |range: std::ops::Range<usize>| range.map(|i| samples[i]).max().unwrap_or(0);
+        let full = peak(&wav);
+        assert!(near_end(0..20) < full / 100, "starts at {}", near_end(0..20));
+        assert!(near_end(samples.len() - 20..samples.len()) < full / 100);
+        // A quarter of the way into the fade it's still well under half
+        assert!(near_end(FADE_SAMPLES / 4 - 30..FADE_SAMPLES / 4) < full / 4);
+        assert!(near_end(FADE_SAMPLES..FADE_SAMPLES + 60) > full * 9 / 10);
     }
 
     #[test]

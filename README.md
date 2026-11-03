@@ -43,10 +43,27 @@ Then:
    what's been read, so Start over before talking to him again.
 
 It takes about 14 flutters to be certain, which is 40 seconds or so, plus the wait for a good moment. You can stop pressing once
-it's locked. Telling 3 from 4 takes practice, and sloppy timing or counts mostly cost time.
+it's locked, and with sound on, two rising notes say when that is. Pressing on can still help: the states left can differ in
+when Link next blinks, and later flutters rule some out, which can bring an earlier window. Telling 3 from 4 takes practice, and sloppy timing or counts mostly cost time.
 
 By default keys 3 and 4 work from any program, and other programs can't get them while it's on. Turn that off in Settings
 if you need to type them, and then they only work with the window focused. It stays how you left it.
+
+### The Ocarina
+
+Once it's locked it also looks for an earlier Heart Piece by freezing Dampe. While the Ocarina is out his blink timer stops and
+Link's keeps going, so Link's single draw can come before Dampe's next pair. When one saves at least 2 seconds, it replaces the
+usual countdown with three, and the line under the countdown says "Ocarina". It's on by default, and **Ocarina** in Settings turns
+it off. It stays how you left it, and the build that reads video does the same, with the same switch next to Sound.
+
+1. **Say No and pull Ocarina:** hold the stick away from Dampe and press No at zero, so Link doesn't face him and bring Navi out.
+   Mash the text closed and have the Ocarina out within 15 game frames (0.75 s).
+2. **Cancel Ocarina and talk to Dampé:** stay still until zero, then put it away and talk to him facing away. Mash the text: there
+   are at least 30 game frames (1.5 s) to the Yes/No box.
+3. **Press A on Yes** at zero.
+
+Don't run far while holding away: leaving his view or getting too far makes him walk, which draws RNG. The freeze has been checked
+against the RNG watch, but no plan has been followed to a Heart Piece yet.
 
 ### Green and amber
 

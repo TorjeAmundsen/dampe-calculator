@@ -166,6 +166,8 @@ fn write_event(out: &mut String, event: &Event) {
         Event::LikelyCancelled => write!(out, r#"{{"t":"likelyCancelled"}}"#),
         Event::LikelyEnded => write!(out, r#"{{"t":"likelyEnded"}}"#),
         Event::CueCancelled => write!(out, r#"{{"t":"cueCancelled"}}"#),
+        // The page never asks for these
+        Event::Ocarina(_) => Ok(()),
     };
 }
 

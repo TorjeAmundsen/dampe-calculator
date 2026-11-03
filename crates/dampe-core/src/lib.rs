@@ -6,6 +6,7 @@
 //! - [`rng`] is the game's model: `Rand_ZeroOne`, the blink timers and the dig roll.
 //! - [`manual`] finds the state from flutters pressed by hand.
 //! - [`reading`] is what a read has to say: its readings, and when a dig gives the Heart Piece.
+//! - [`ocarina`] plans reaching a Heart Piece sooner by freezing Dampe with the Ocarina.
 //!
 //! With the `video` feature, which is everything about seeing flutters instead:
 //! - `textbox` tells when the Yes/No box is up, which is the only time anything counts.
@@ -23,6 +24,7 @@ pub mod eye;
 pub mod manual;
 #[cfg(feature = "video")]
 pub mod navi;
+pub mod ocarina;
 #[cfg(feature = "video")]
 pub mod picture;
 pub mod reading;

@@ -10,8 +10,10 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 use crate::reading::{
     CONFIRMATIONS, Candidate, HORIZON, LIKELY_HORIZON, LIKELY_MIN_CONFIDENCE, LIKELY_READINGS, LINK_PHASES, Reading,
-    Readings, Status, Window, chances_by_frame, first_likely_window, first_window, scan_all_states,
+    Readings, Status, Window, certain_part, chances_by_frame, first_likely_window, first_window, rolls_for_all,
+    scan_all_states,
 };
+use crate::ocarina::Plan;
 use crate::rng::{BOX_GONE_TO_ROLL, Blinks};
 
 /// Game frames per second, which is all there is without video to measure it from.
@@ -85,6 +87,8 @@ const NOT_FOUND_PER_PRESS: f64 = 2.49;
 /// it's locked is the point, so flutters with no press say nothing, and one stray press from a hand
 /// that hasn't stopped yet isn't enough. A wrong state's flutters land near a press about 1 time in 3.
 const LOCK_CONTRADICTIONS: u32 = 3;
+/// After a lock, readings this much costlier than the best are dropped: under 1 in 10,000 as likely.
+const LOCKED_DROP_COST: f64 = 9.2;
 
 /// Game frames between now and the first dust of the earliest cue, so the countdown can be followed:
 /// the box leaves 33 frames before that, and the press about 10 before the box, which leaves a press
@@ -357,6 +361,7 @@ impl ManualTracker {
         if self.locked {
             self.check_lock();
             if self.locked {
+                self.rescore_locked();
                 return None;
             }
         }
@@ -391,6 +396,26 @@ impl ManualTracker {
             self.locked_presses = self.presses.len();
             self.contradictions = 0;
         }
+    }
+
+    /// After a lock, its readings still differ in when Link next blinks. Their flutters are the same until
+    /// one of Dampe's draws falls between their blinks, and then presses can tell them apart, so those the
+    /// presses rule out are dropped. Windows then only have to suit the rest, which can bring a closer one.
+    fn rescore_locked(&mut self) {
+        let presses = &self.presses[self.anchor.min(self.presses.len())..];
+        let now = self.now;
+        let rescored: Vec<Followed> = self
+            .followed
+            .iter()
+            .filter_map(|followed| {
+                let score = compare(followed.seed, followed.link_first, presses, now)?;
+                Some(Followed { score, ..*followed })
+            })
+            .collect();
+        // With none left the presses say nothing about which, and whether the lock holds is check_lock's
+        let Some(best) = rescored.iter().map(Followed::total_cost).min_by(f64::total_cmp) else { return };
+        self.followed = rescored.into_iter().filter(|followed| followed.total_cost() <= best + LOCKED_DROP_COST).collect();
+        self.followed.sort_unstable_by(|a, b| a.total_cost().total_cmp(&b.total_cost()));
     }
 
     /// Looks at presses that came after locking.
@@ -493,15 +518,28 @@ impl ManualTracker {
     /// The first window for every reading of the likeliest state, from press frame `from` on, since
     /// those can still differ in when Link next blinks.
     pub fn next_window(&self, from: i64, min_frames: i64) -> Option<Window> {
-        let state = self.followed.first()?.state_at(self.now);
-        let same_state: Vec<Candidate> = self
-            .followed
+        first_window(&self.same_state(), from, min_frames, HORIZON)
+    }
+
+    /// The readings of the likeliest state, which can still differ in when Link next blinks.
+    fn same_state(&self) -> Vec<Candidate> {
+        let Some(best) = self.followed.first() else { return Vec::new() };
+        let state = best.state_at(self.now);
+        self.followed
             .iter()
             .take(LIKELY_READINGS)
             .filter(|followed| self.locked || followed.state_at(self.now) == state)
             .map(Followed::candidate)
-            .collect();
-        first_window(&same_state, from, min_frames, HORIZON)
+            .collect()
+    }
+
+    /// A plan to beat `waiting` with the Ocarina, as of press frame `now`, once locked.
+    fn ocarina_plan(&self, now: i64, waiting: Option<Window>) -> Option<Plan> {
+        if !self.locked {
+            return None;
+        }
+        let readings: Vec<Candidate> = self.followed.iter().take(LIKELY_READINGS).map(Followed::candidate).collect();
+        crate::ocarina::find(&readings, now, waiting)
     }
 
     /// The `limit` likeliest readings, to show.
@@ -555,6 +593,8 @@ pub enum Event {
     LikelyEnded,
     /// A cue isn't valid any more: the presses contradicted it.
     CueCancelled,
+    /// The Ocarina can now beat waiting with this plan, or can't any more.
+    Ocarina(Option<Plan>),
 }
 
 struct Update {
@@ -563,6 +603,7 @@ struct Update {
     readings: Readings,
     window: Option<Window>,
     likely: Option<(Window, f64)>,
+    ocarina: Option<Plan>,
 }
 
 enum Work {
@@ -570,6 +611,7 @@ enum Work {
     Flip(f64),
     Tick(f64),
     Reset(u64),
+    UseOcarina,
 }
 
 /// Game frames to add to the leads, for pressing further ahead of the box than they allow for.
@@ -597,11 +639,22 @@ struct Search {
     extra_lead: i64,
     /// The press frame being judged, and the clock before that.
     judging: Option<(f64, f64)>,
+    use_ocarina: bool,
+    /// The plan on offer, kept until it's too late to follow.
+    ocarina: Option<Plan>,
 }
 
 impl Search {
     fn new(extra_lead: i64) -> Self {
-        Self { tracker: ManualTracker::new(), likely: None, generation: 0, extra_lead, judging: None }
+        Self {
+            tracker: ManualTracker::new(),
+            likely: None,
+            generation: 0,
+            extra_lead,
+            judging: None,
+            use_ocarina: false,
+            ocarina: None,
+        }
     }
 
     /// Takes in `jobs`. Presses to scan come back if that's needed before [`Self::finish`].
@@ -612,9 +665,11 @@ impl Search {
                 Work::Reset(new) => {
                     self.tracker = ManualTracker::new();
                     self.likely = None;
+                    self.ocarina = None;
                     self.generation = new;
                     pressed = None;
                 }
+                Work::UseOcarina => self.use_ocarina = true,
                 Work::Press(press) => {
                     self.tracker.add(press);
                     pressed = Some(press.frame);
@@ -644,7 +699,12 @@ impl Search {
             let around = Window { first_roll: target - LIKELY_TARGET_FRAMES, last_roll: target + LIKELY_TARGET_FRAMES };
             still_ahead(window, now) && self.tracker.window_chance(around) >= LIKELY_MIN_CONFIDENCE
         });
-        let proven = self.likely.filter(|&window| locked && self.tracker.window_chance(window) >= CERTAIN);
+        let proven = self.likely.filter(|_| locked).and_then(|window| {
+            let readings = self.tracker.same_state();
+            certain_part(window, MIN_WINDOW_FRAMES, |part| {
+                rolls_for_all(&readings, part) && self.tracker.window_chance(part) >= CERTAIN
+            })
+        });
         if proven.is_some() {
             self.likely = None;
         }
@@ -665,12 +725,22 @@ impl Search {
             );
             self.likely = likely_update.map(|(window, _)| window);
         }
+        let follow_from = now + self.extra_lead as f64;
+        self.ocarina = self.ocarina.filter(|plan| locked && plan.can_follow(follow_from));
+        if self.use_ocarina && locked && self.ocarina.is_none() {
+            // A running likely cue is what waiting gets too, and after a lock it's as good as certain
+            let waiting = window
+                .or(self.likely)
+                .or_else(|| self.tracker.next_window(now as i64 + CUE_LEAD_FRAMES, MIN_WINDOW_FRAMES));
+            self.ocarina = self.tracker.ocarina_plan(now as i64 + self.extra_lead, waiting);
+        }
         Update {
             generation: self.generation,
             status: self.tracker.status(),
             readings: self.tracker.readings(SHOWN_READINGS),
             window,
             likely: likely_update,
+            ocarina: self.ocarina,
         }
     }
 }
@@ -732,6 +802,7 @@ pub struct ManualSession {
     last_press: Option<f64>,
     presses: usize,
     last_look: f64,
+    ocarina: Option<Plan>,
 }
 
 impl ManualSession {
@@ -768,7 +839,13 @@ impl ManualSession {
             last_press: None,
             presses: 0,
             last_look: 0.0,
+            ocarina: None,
         }
+    }
+
+    /// Also offers plans with the Ocarina, as [`Event::Ocarina`].
+    pub fn use_ocarina(&self) {
+        let _ = self.work.send(Work::UseOcarina);
     }
 
     /// A press of `count` at `seconds`. True if it flipped the last one.
@@ -798,6 +875,7 @@ impl ManualSession {
         self.likely_cue = None;
         self.last_press = None;
         self.presses = 0;
+        self.ocarina = None;
     }
 
     /// The readings, if they changed since the last call.
@@ -836,6 +914,10 @@ impl ManualSession {
         }
         self.status = update.status;
         self.new_readings = Some(update.readings);
+        if update.ocarina != self.ocarina {
+            self.ocarina = update.ocarina;
+            events.push(Event::Ocarina(update.ocarina));
+        }
         // A certain cue that's running is better than anything likely
         let update_likely = update.likely.filter(|_| self.cue.is_none());
         let new_likely = update_likely.map(|(window, _)| window);
@@ -1021,6 +1103,47 @@ mod tests {
         ManualTracker { presses: presses.to_vec(), followed, locked: true, locked_presses, ..ManualTracker::default() }
     }
 
+    /// Readings of the locked state that only differ in Link's next blink look the same until one of
+    /// Dampe's draws falls between their blinks. Presses after that have to rule the wrong ones out.
+    #[test]
+    fn presses_after_a_lock_rule_out_readings_that_split_from_it() {
+        const LOCKED_AT: usize = 16;
+        const LATER: usize = 60;
+        let truth = exact(3_141_592, 40, LATER, 5.0);
+        let same_until_lock = |presses: &[Press]| {
+            presses[..LOCKED_AT].iter().zip(&truth).all(|(a, b)| a.count == b.count && (a.frame - b.frame).abs() < 0.5)
+        };
+        let split = (20..=99)
+            .filter(|&link| link != 40)
+            .find(|&link| {
+                let other = exact(3_141_592, link, LATER, 5.0);
+                same_until_lock(&other) && other != truth
+            })
+            .expect("no reading that splits after the lock");
+        let presses = &truth[..LOCKED_AT];
+        let reading = |link_first| Followed {
+            seed: 3_141_592,
+            link_first,
+            score: compare(3_141_592, link_first, presses, presses[LOCKED_AT - 1].frame).expect("it fits"),
+        };
+        let mut tracker = ManualTracker {
+            presses: presses.to_vec(),
+            followed: vec![reading(40), reading(split)],
+            locked: true,
+            locked_presses: LOCKED_AT,
+            ..ManualTracker::default()
+        };
+        tracker.update(presses[LOCKED_AT - 1].frame);
+        assert_eq!(tracker.followed().len(), 2, "nothing tells them apart yet");
+        for &press in &truth[LOCKED_AT..] {
+            tracker.add(press);
+            tracker.update(press.frame);
+        }
+        assert_eq!(tracker.status(), Status::Locked);
+        let left: Vec<i64> = tracker.followed().iter().map(|followed| followed.link_first).collect();
+        assert_eq!(left, [40], "Link {split} should be ruled out");
+    }
+
     /// A tracker following one reading of `cost` over 16 presses.
     fn following_one_of_cost(cost: f64, locked: bool) -> ManualTracker {
         let presses = exact(3_141_592, 40, 16, 5.0);
@@ -1197,7 +1320,7 @@ mod tests {
         let status = session.status.clone();
         let mut events = Vec::new();
         session.apply(
-            Update { generation: 0, status, readings: Readings::default(), window, likely: None },
+            Update { generation: 0, status, readings: Readings::default(), window, likely: None, ocarina: None },
             now,
             &mut events,
         );

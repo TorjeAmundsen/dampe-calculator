@@ -5,8 +5,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 use crate::detector::{Cadence, Detector, Flutter, Health, Rect};
 use crate::navi::NaviWatch;
+use crate::ocarina::Plan;
 use crate::picture::{GameArea, HEIGHT, Luma, Normalizer, WIDTH};
-use crate::reading::{Candidate, LIKELY_MIN_CONFIDENCE, Readings, Status, Window};
+use crate::reading::{Candidate, LIKELY_MIN_CONFIDENCE, Readings, Status, Window, certain_part, rolls_for_all};
 use crate::rng::{BOX_GONE_TO_ROLL, StateWalk, rolls_heart_piece};
 use crate::solver::Observation;
 use crate::textbox::{Change, FRAMES_TO_CLOSE, TextWatch, TextboxWatch};
@@ -132,6 +133,8 @@ pub enum Event {
         seconds: f64,
         heart_piece: Option<bool>,
     },
+    /// The Ocarina can now beat waiting with this plan, in game frames, or can't any more.
+    Ocarina(Option<Plan>),
 }
 
 /// Readings sent to be shown, more than fit a window of the usual size.
@@ -143,6 +146,7 @@ struct Update {
     candidates: Vec<Candidate>,
     window: Option<Window>,
     likely: Option<(Window, f64)>,
+    ocarina: Option<Plan>,
 }
 
 enum Work {
@@ -165,6 +169,8 @@ fn still_ahead(window: &Window, now: i64) -> bool {
 fn tracker_thread(work: Receiver<Work>, updates: Sender<Update>) {
     let mut tracker = Tracker::new();
     let mut likely: Option<Window> = None;
+    // The plan on offer, kept until it's too late to follow
+    let mut ocarina: Option<Plan> = None;
     while let Ok(job) = work.recv() {
         let mut now = None;
         let mut jobs = vec![job];
@@ -175,6 +181,7 @@ fn tracker_thread(work: Receiver<Work>, updates: Sender<Update>) {
                 Work::Reset => {
                     tracker.reset();
                     likely = None;
+                    ocarina = None;
                     now = None;
                 }
                 Work::Replace(through, flutters, at) => {
@@ -198,7 +205,11 @@ fn tracker_thread(work: Receiver<Work>, updates: Sender<Update>) {
             let around = Window { first_roll: target - LIKELY_TARGET_FRAMES, last_roll: target + LIKELY_TARGET_FRAMES };
             still_ahead(window, now) && tracker.window_confidence(around) >= LIKELY_MIN_CONFIDENCE
         });
-        let proven = likely.filter(|&window| locked && tracker.window_confidence(window) >= CERTAIN);
+        let proven = likely.filter(|_| locked).and_then(|window| {
+            certain_part(window, MIN_WINDOW_FRAMES, |part| {
+                rolls_for_all(tracker.candidates(), part) && tracker.window_confidence(part) >= CERTAIN
+            })
+        });
         if proven.is_some() {
             likely = None;
         }
@@ -213,12 +224,20 @@ fn tracker_thread(work: Receiver<Work>, updates: Sender<Update>) {
             likely = found.map(|found| found.window);
             likely_update = found.map(|found| (found.window, found.chance));
         }
+        ocarina = ocarina.filter(|plan| locked && plan.can_follow(now as f64));
+        if locked && ocarina.is_none() {
+            // A running likely cue is what waiting gets too, and after a lock it's as good as certain
+            let waiting =
+                window.or(likely).or_else(|| tracker.next_window(now + CUE_LEAD_FRAMES, MIN_WINDOW_FRAMES));
+            ocarina = crate::ocarina::find(tracker.candidates(), now, waiting);
+        }
         let update = Update {
             status: tracker.status(),
             readings: tracker.readings(SHOWN_READINGS, now, MIN_WINDOW_FRAMES),
             candidates: tracker.candidates().to_vec(),
             window,
             likely: likely_update,
+            ocarina,
         };
         if updates.send(update).is_err() {
             return;
@@ -253,6 +272,7 @@ pub struct Session {
     new_readings: Option<Readings>,
     cue: Option<Window>,
     likely_cue: Option<Window>,
+    ocarina: Option<Plan>,
     /// Wait for each search instead of continuing, so a replay isn't ahead of its own searches.
     wait_for_searches: bool,
 }
@@ -291,6 +311,7 @@ impl Session {
             new_readings: None,
             cue: None,
             likely_cue: None,
+            ocarina: None,
             wait_for_searches,
         }
     }
@@ -354,12 +375,18 @@ impl Session {
         self.new_readings = Some(Readings::default());
         self.cue = None;
         self.likely_cue = None;
+        self.ocarina = None;
     }
 
     /// Seconds into the read that a text box leaving for `window` should leave, going by the clock.
     pub fn window_seconds(&self, window: &Window) -> f64 {
         let (first, last) = window.box_gone();
         self.clock.seconds_at((first + last) / 2)
+    }
+
+    /// Seconds into the read that game frame `frame` arrives, going by the clock.
+    pub fn seconds_at(&self, frame: i64) -> f64 {
+        self.clock.seconds_at(frame)
     }
 
     /// Whether the feed turned out to be soft, so smaller changes count.
@@ -390,6 +417,7 @@ impl Session {
         self.new_readings = Some(Readings::default());
         self.cue = None;
         self.likely_cue = None;
+        self.ocarina = None;
         self.game_frame = -1;
         self.navi.end_read();
         self.last_new_frame = None;
@@ -406,6 +434,7 @@ impl Session {
         self.new_readings = Some(Readings::default());
         self.cue = None;
         self.likely_cue = None;
+        self.ocarina = None;
         self.game_frame = -1;
         self.navi.end_read();
         self.last_new_frame = None;
@@ -546,6 +575,10 @@ impl Session {
         self.status = update.status;
         self.candidates = update.candidates;
         self.new_readings = Some(update.readings);
+        if update.ocarina != self.ocarina {
+            self.ocarina = update.ocarina;
+            events.push(Event::Ocarina(update.ocarina));
+        }
         // A certain cue that's running is better than anything likely
         let update_likely = update.likely.filter(|_| self.cue.is_none());
         let new_likely = update_likely.map(|(window, _)| window);

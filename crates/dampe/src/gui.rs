@@ -161,13 +161,9 @@ fn reading_rows(readings: &Readings, left: impl Fn(&Reading) -> Option<f64>) -> 
     (rows, summary)
 }
 
-/// Repaints the whole window with the next change, if it isn't showing video. See the rectangle this
-/// flips for why. Video's frames are too frequent and too big to add this to, and hide the problem.
+/// Repaints the whole window with the next change. See the rectangle this flips for why. Video's frames
+/// don't do this, since they come too often, and they didn't hide the problem from the text either.
 fn repaint_all(window: &MainWindow) {
-    #[cfg(feature = "video")]
-    if !window.get_manual() {
-        return;
-    }
     window.set_repaint_all(!window.get_repaint_all());
 }
 
@@ -182,11 +178,18 @@ pub struct Gui {
 
 impl Gui {
     fn on_ui(&self, change: impl FnOnce(&MainWindow) + Send + 'static) {
+        self.on_ui_painting(true, change);
+    }
+
+    /// Makes `change` in the window, then repaints all of it if `everything`.
+    fn on_ui_painting(&self, everything: bool, change: impl FnOnce(&MainWindow) + Send + 'static) {
         let window = self.window.clone();
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(window) = window.upgrade() {
                 change(&window);
-                repaint_all(&window);
+                if everything {
+                    repaint_all(&window);
+                }
             }
         });
     }
@@ -208,7 +211,7 @@ impl Gui {
         });
         let blinking = eye.is_some_and(|eye| blobs.iter().any(|blob| blob.overlaps(&eye)));
         let pending = self.picture_pending.clone();
-        self.on_ui(move |window| {
+        self.on_ui_painting(false, move |window| {
             pending.store(false, Ordering::Release);
             window.set_feed(slint::Image::from_rgba8(feed));
             let marks: Vec<GameRect> = blobs.into_iter().map(game_rect).collect();
@@ -227,6 +230,11 @@ impl Gui {
     /// Has `count_keys` hear about changes to the setting for hearing them from any program.
     pub fn on_global_keys_changed(&self, count_keys: impl Fn(bool) + Send + 'static) {
         self.on_ui(move |window| window.on_global_keys_changed(count_keys));
+    }
+
+    /// Has `ocarina` hear about changes to the setting for following plans with the Ocarina.
+    pub fn on_ocarina_changed(&self, ocarina: impl Fn(bool) + Send + 'static) {
+        self.on_ui(move |window| window.on_ocarina_changed(ocarina));
     }
 
     /// The keys couldn't be had from any program, so they're only heard in the window.
@@ -358,11 +366,13 @@ pub struct Options {
     /// Where presses of 3 and 4 in the window go, if anywhere.
     pub presses: Option<Sender<(u8, Instant)>>,
     pub manual: Option<ManualStart>,
+    /// Whether plans with the Ocarina are followed.
+    pub ocarina: bool,
 }
 
 /// Opens the window, runs `read` on its own thread, and returns when the window closes.
 pub fn run(options: Options, read: impl FnOnce(Gui, Arc<AtomicBool>) + Send + 'static) -> Result<(), String> {
-    let Options { source, sound, timing, hotkey_pressed, hotkey_name, presses, manual } = options;
+    let Options { source, sound, timing, hotkey_pressed, hotkey_name, presses, manual, ocarina } = options;
     slint::BackendSelector::new()
         .backend_name("winit".into())
         .renderer_name("software".into())
@@ -377,6 +387,7 @@ pub fn run(options: Options, read: impl FnOnce(Gui, Arc<AtomicBool>) + Send + 's
         window.set_global_keys(start.global_keys);
         window.set_status(start.status.into());
     }
+    window.set_ocarina(ocarina);
     window.set_platform_index(i32::from(timing.platform() == Platform::WiiVc));
     window.set_timing(timing.describe().into());
     {
@@ -455,14 +466,17 @@ pub fn run(options: Options, read: impl FnOnce(Gui, Arc<AtomicBool>) + Send + 's
         shown.set(true);
         let left = at.saturating_duration_since(now).as_secs_f64();
         let pressing = at <= now;
-        window.set_press(pressing);
-        window.set_pulse(PULSE_AT.iter().any(|&second| (0.0..PULSE_SECONDS).contains(&(second - left))));
+        let pulse = PULSE_AT.iter().any(|&second| (0.0..PULSE_SECONDS).contains(&(second - left)));
         let text: SharedString = if pressing { "PRESS A".into() } else { format!("{left:.1} s").into() };
-        if window.get_countdown() != text {
-            window.set_countdown(text);
-        }
+        // The bar alone moves every tick, and repainting everything that often costs too much beside OBS
+        let changed = window.get_press() != pressing || window.get_pulse() != pulse || window.get_countdown() != text;
+        window.set_press(pressing);
+        window.set_pulse(pulse);
+        window.set_countdown(text);
         window.set_countdown_share((1.0 - left / BAR_SECONDS).clamp(0.0, 1.0) as f32);
-        repaint_all(&window);
+        if changed {
+            repaint_all(&window);
+        }
     });
 
     let thread_gui = gui.clone();
