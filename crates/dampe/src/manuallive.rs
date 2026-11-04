@@ -26,7 +26,7 @@ const READINGS_REFRESH: Duration = Duration::from_millis(100);
 /// What `--lag-ms` takes: earlier than the flutter's end is possible, by someone anticipating it.
 const LAG_RANGE_MS: std::ops::RangeInclusive<f64> = -500.0..=2000.0;
 
-const WAITING: &str = "Talk to Dampé, then press once Navi is done";
+const WAITING: &str = "Talk to Dampé, then press once Navi has gone away";
 /// Counts shown of the last presses, enough to catch a wrong one.
 const RECENT_PRESSES: usize = 6;
 

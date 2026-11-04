@@ -1,8 +1,8 @@
-//! Tells when Navi has finished. Her sparkles draw RNG in bursts, which breaks the blink model, so
-//! flutters from before that can't count. On a first talk she's done before the Yes/No box opens. On
+//! Tells when Navi has gone away. Her sparkles draw RNG in bursts, which breaks the blink model, so
+//! flutters from before that can't count. On a first talk she's gone before the Yes/No box opens. On
 //! a repeat talk the box opens right away, and she's still to come.
 //!
-//! The picture shows when she's done: the head turning towards Link and Navi flying in make it
+//! The picture shows when she's gone: the head turning towards Link and Navi flying in make it
 //! differ from the same point of the idle loop, and it stops doing so about 8 game frames before her
 //! last draw. That's been the same on all recordings so far, so a margin covers it.
 //!
@@ -18,7 +18,7 @@ use crate::rng::IDLE_LOOP_FRAMES;
 
 /// Only the part of the picture above the text box, since the text changes on its own.
 const ABOVE_BOX: usize = WIDTH * HEIGHT * 5 / 8;
-/// The average difference to the same point of the loop that counts as settled. Before she's done
+/// The average difference to the same point of the loop that counts as settled. Before she's gone
 /// it's 6 to 10, after about 1, a bit more with a drifting sky.
 const SETTLED_DIFFERENCE: u64 = 2;
 /// Game frames in a row it has to stay that way.
@@ -40,7 +40,7 @@ const LIGHT_PIXELS: usize = 6;
 /// with her end 12 to 15 game frames after the light.
 const SPARKLE_FRAMES: i64 = 17;
 
-/// Follows the picture to see when Navi has finished.
+/// Follows the picture to see when Navi has gone away.
 pub struct NaviWatch {
     recent: VecDeque<Vec<u8>>,
     /// Game frames in a row the picture has repeated the loop.
@@ -89,9 +89,9 @@ impl NaviWatch {
         self.recent.push_back(top.to_vec());
     }
 
-    /// A box opened. Returns whether Navi is already done.
+    /// A box opened. Returns whether Navi is already gone.
     pub fn box_opened(&mut self) -> bool {
-        // It takes a whole loop to know a frame repeated it, so a box opening just after she's done
+        // It takes a whole loop to know a frame repeated it, so a box opening just after she's gone
         // has to wait for that, and looks back when it knows
         self.waiting = self.settled_for < SETTLED_FRAMES || self.light;
         // A read that starts on her light has game frame 0 right after it, which may be the last
@@ -131,7 +131,7 @@ impl NaviWatch {
         Some((from, held.into_iter().filter(|flutter| flutter.start >= from).collect()))
     }
 
-    /// Someone said she's done, so only flutters from game frame `from` on count.
+    /// Someone said she's gone, so only flutters from game frame `from` on count.
     pub fn mark_gone(&mut self, from: i64) {
         self.waiting = false;
         self.from = from;

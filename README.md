@@ -35,14 +35,15 @@ Then:
 
 1. Press **Start over** (**F8**) if you've pressed anything since your last talk. Nothing here can see a new talk or a dig, so old
    presses otherwise carry over.
-2. Talk to him with his eyes visible, and wait for Navi to finish, since her sparkles draw RNG. On a repeat talk she comes
+2. Talk to him with his eyes visible, and wait for Navi to go away, since her sparkles draw RNG. On a repeat talk she comes
    about 3-4 seconds after the Yes/No box opens. Go to the Yes/No box whenever you like, and stay on it.
 3. Press **3** or **4** as each burst of blinks ends, for how many blinks it had. Press either again within 1.3 s to flip a count
    you got wrong.
 4. When a countdown starts, press A on Yes as it reaches zero. Anticipate it like a rhythm game rather than reacting. The dig ends
    what's been read, so Start over before talking to him again.
 
-It takes about 14 flutters to be certain, which is 40 seconds or so, plus the wait for a good moment. You can stop pressing once
+It takes about 14 flutters to be certain, which is 40 seconds or so, plus the wait for a good moment. [GUIDE.md](GUIDE.md) is
+about getting that lower. You can stop pressing once
 it's locked, and with sound on, two rising notes say when that is. Pressing on can still help: the states left can differ in
 when Link next blinks, and later flutters rule some out, which can bring an earlier window. Telling 3 from 4 takes practice, and sloppy timing or counts mostly cost time.
 
@@ -137,7 +138,7 @@ Before talking to Dampe, make sure of these, since they draw RNG the program can
 
 Then:
 
-1. Talk to him with his eyes visible. It starts reading at his first text box, and counts his blinks once Navi is done.
+1. Talk to him with his eyes visible. It starts reading at his first text box, and counts his blinks once Navi has gone away.
 2. Go through the text to the Yes/No box whenever you like, and stay on that box until the countdown.
 3. When the countdown starts, press A on Yes as it reaches zero. Anticipate it like a rhythm game rather than reacting.
 
@@ -173,15 +174,15 @@ Starting a new talk resets it by itself. Use **Start over** if it seems stuck.
 
 #### Navi and Force start
 
-Navi's sparkles draw RNG, so nothing before she's done can count. It sees her bright light and starts over until it's gone. On a first talk she's done before the Yes/No box. On a
+Navi's sparkles draw RNG, so nothing before she's gone can count. It sees her bright light and starts over until it's gone. On a first talk she's gone before the Yes/No box. On a
 repeat talk the box opens right away and she comes about 3-4 seconds later, and it waits for her by itself.
 
 You normally never need **Force start** (**F8**), because reading starts by itself at his first text box. Don't press it
 to get things going, like in a loading zone or while walking up to him: it reads whatever is on screen. A text box opening
 replaces a read forced before it, so that only costs time until then.
 
-Use it with a text box up if it isn't seeing Navi finish, or with no box if it won't start at all. Only blinks from that
-moment on count, so if Navi is around, wait until she's done. F8 works from any program, and only listens to your keyboard.
+Use it with a text box up if it isn't seeing Navi go away, or with no box if it won't start at all. Only blinks from that
+moment on count, so if Navi is around, wait until she's gone. F8 works from any program, and only listens to your keyboard.
 On Linux it only works while the window has focus. `--navi-key F9` picks another function key.
 
 #### Timing

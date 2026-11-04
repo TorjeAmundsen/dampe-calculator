@@ -95,7 +95,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         crate::show_error(&error);
     });
     logfile::line(format_args!(
-        "If the box opened right away because you've talked to Dampé before, it waits for Navi by itself. {navi_key} forces a start, and is only for when it doesn't start or doesn't see Navi finish."
+        "If the box opened right away because you've talked to Dampé before, it waits for Navi by itself. {navi_key} forces a start, and is only for when it doesn't start or doesn't see Navi go away."
     ));
     let (press_sender, press_log) = match press_log_path {
         Some(_) if !window => return Err("--log-presses takes the window, which hears the keys".to_owned()),
@@ -384,8 +384,8 @@ fn read(
                 followed_plan = false;
             }
             match event {
-                Event::NaviDone { held, .. } => {
-                    log.line(format_args!("Navi looks done. Counting from then: {held} flutters so far."));
+                Event::NaviGone { held, .. } => {
+                    log.line(format_args!("Navi looks gone. Counting from then: {held} flutters so far."));
                     if let Some(gui) = &gui {
                         gui.set_status("Reading flutters".to_owned(), Tone::Reading);
                     }

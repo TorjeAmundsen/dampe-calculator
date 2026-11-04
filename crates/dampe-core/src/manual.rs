@@ -72,8 +72,9 @@ fn link_phase_cost(link_first: i64) -> f64 {
 
 /// The share of all readings' weight one state needs to be trusted.
 const LOCK_SHARE: f64 = 0.99;
-/// Presses a reading has to explain to be trusted.
-const LOCK_PRESSES: u32 = 12;
+/// Presses a reading has to explain to be trusted. 10 locked 0.9 presses sooner than 12 on tight presses
+/// (25-50 ms), with the same wrong locks on sloppy ones (1 of 80 at 160 ms). 9 was no sooner than 10.
+const LOCK_PRESSES: u32 = 10;
 /// What presses cost if the real reading isn't being followed, as one number to weigh against readings.
 /// Readings get a head start of ln(2^23 states * 99 Link phases), since the best of that many fits
 /// anything somewhat by chance. Scored on simulated presses unrelated to any state, this took locks from

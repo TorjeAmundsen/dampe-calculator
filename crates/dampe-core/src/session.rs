@@ -120,8 +120,8 @@ pub enum Event {
     },
     /// A likely cue isn't likely any more.
     LikelyCancelled,
-    /// Navi looks done: flutters from `from` on count, and `held` of those came while waiting.
-    NaviDone {
+    /// Navi looks gone: flutters from `from` on count, and `held` of those came while waiting.
+    NaviGone {
         from: i64,
         held: usize,
     },
@@ -535,7 +535,7 @@ impl Session {
             }
         }
         if let Some((from, held)) = self.navi.advance(self.game_frame) {
-            events.push(Event::NaviDone { from, held: held.len() });
+            events.push(Event::NaviGone { from, held: held.len() });
             for flutter in held {
                 self.observe(flutter, events);
             }

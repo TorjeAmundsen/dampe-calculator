@@ -202,7 +202,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
         let mut flutters: Vec<_> = flutters.into_iter().filter_map(|flutter| navi.admit(flutter)).collect();
         if let Some((from, held)) = navi.advance(game_to_truth.len() as i64 - 1) {
-            println!("Navi looks done at video frame {current}: counts from game frame {from}, {} held", held.len());
+            println!("Navi looks gone at video frame {current}: counts from game frame {from}, {} held", held.len());
             flutters.splice(0..0, held);
         }
         for flutter in flutters {

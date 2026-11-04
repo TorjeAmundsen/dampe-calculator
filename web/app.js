@@ -2,7 +2,7 @@
 // The state of the read is worked out in search.js. Nothing is ever sent to the game.
 "use strict";
 
-const WAITING = "Talk to Dampé, then press once Navi is done";
+const WAITING = "Talk to Dampé, then press once Navi has gone away";
 const DEFAULT_LAG_MS = 330;
 const INPUT_LATENCY_MS = { n64: 100, vc: 150 };
 const LAG_RANGE_MS = [-500, 2000];
