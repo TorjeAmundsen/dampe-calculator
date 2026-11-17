@@ -31,6 +31,12 @@ const GIVE_UP_FRAMES: i64 = 300;
 
 /// The rows that can show her light: below the hearts and above the text box.
 const LIGHT_ROWS: std::ops::Range<usize> = 16..261;
+/// The HUD's corner, left out of looking for her light: rows above this and columns left of that. A full
+/// file's second row of hearts and its magic bar reach down to about row 58, and their white outlines
+/// (double defense, the bar's edge) averaged 218 against her light's 220, so a slightly different game
+/// area put them over and every frame looked like her. Her light is around Link and Dampe, not up there.
+const HUD_ROWS: usize = 64;
+const HUD_COLUMNS: usize = 240;
 /// How bright her light is, and how many pixels of it count.
 const LIGHT_LEVEL: u8 = 220;
 const LIGHT_PIXELS: usize = 6;
@@ -74,8 +80,14 @@ impl Default for NaviWatch {
 impl NaviWatch {
     /// The next game frame's picture, whether a box is open or not.
     pub fn frame(&mut self, picture: &[u8]) {
-        let rows = &picture[LIGHT_ROWS.start * WIDTH..LIGHT_ROWS.end * WIDTH];
-        self.light = rows.iter().filter(|&&pixel| pixel > LIGHT_LEVEL).count() >= LIGHT_PIXELS;
+        let lit = LIGHT_ROWS
+            .flat_map(|row| {
+                let from = if row < HUD_ROWS { HUD_COLUMNS } else { 0 };
+                &picture[row * WIDTH + from..(row + 1) * WIDTH]
+            })
+            .filter(|&&pixel| pixel > LIGHT_LEVEL)
+            .count();
+        self.light = lit >= LIGHT_PIXELS;
         let top = &picture[..ABOVE_BOX];
         if self.recent.len() == IDLE_LOOP_FRAMES {
             let old = self.recent.pop_front().expect("checked the length");
@@ -277,6 +289,24 @@ mod tests {
         assert!(watch.light_while_waiting());
         watch.frame(&looping(260));
         assert!(!watch.light_while_waiting(), "it's gone");
+    }
+
+    /// A full file's HUD has white outlines up in the corner, the magic bar's and double defense's,
+    /// which must not look like her, while her light just past the corner still does.
+    #[test]
+    fn the_huds_white_outlines_are_not_her_light() {
+        let mut watch = settled_watch();
+        let mut hud = looping(200);
+        for row in 37..57 {
+            hud[row * WIDTH..row * WIDTH + 90].fill(240);
+        }
+        watch.frame(&hud);
+        assert!(watch.box_opened(), "the magic bar counted as her");
+        let mut lit = hud.clone();
+        lit[40 * WIDTH + HUD_COLUMNS..40 * WIDTH + HUD_COLUMNS + 10].fill(240);
+        watch.frame(&lit);
+        watch.box_opened();
+        assert!(watch.light_while_waiting(), "the control: her light right of the corner");
     }
 
     /// However settled the picture is, her sparkles keep drawing after her light is out.

@@ -114,7 +114,7 @@ function Build($name) {
     if (Test-Path $output) { Remove-Item $output -Recurse -Force }
     New-Item -ItemType Directory -Path $output | Out-Null
     Copy-Item "$targetDir/$triple/dist/$binary" $output
-    Copy-Item "$PSScriptRoot/README.md", "$PSScriptRoot/LICENSE" $output
+    Copy-Item "$PSScriptRoot/LICENSE" $output
 
     $zip = "$PSScriptRoot/dist/dampe-calculator-$version-$build.zip"
     Zip $output $zip $binary

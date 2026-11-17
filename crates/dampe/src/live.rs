@@ -332,6 +332,11 @@ fn read(
         let lead = timing.lead_ms() / 1000.0;
         if use_ocarina.load(Ordering::Relaxed)
             && let Some(plan) = offered.take()
+            && cue_at.is_none_or(|cue| {
+                // Never give up a running countdown for a plan that doesn't press A clearly sooner
+                let yes = session.window_seconds(&plan.window) - lead;
+                cue <= started.elapsed().as_secs_f64() || yes < cue - manuallive::PLAN_MUST_BEAT_SECONDS
+            })
         {
             log.line(format_args!("Following the Ocarina plan: {plan:?}"));
             followed_plan = true;

@@ -10,9 +10,9 @@
 //! the README.
 
 use crate::reading::{Candidate, Window};
-use crate::rng::{BOX_GONE_TO_ROLL, Blinks, FREEZE_EXTRA_SPREAD, StateWalk, rolls_heart_piece};
 #[cfg(test)]
 use crate::rng::FREEZE_EXTRA_FRAMES;
+use crate::rng::{BOX_GONE_TO_ROLL, Blinks, FREEZE_EXTRA_SPREAD, StateWalk, rolls_heart_piece};
 
 /// Game frames from pressing No to the Ocarina being out, with a reasonable mash. From a user: 8 is
 /// frame perfect, and 15 is consistent.
@@ -63,6 +63,11 @@ impl Plan {
     /// The frame to press No on.
     pub fn press_no(&self) -> i64 {
         self.enter - TO_OCARINA_FRAMES
+    }
+
+    /// Whether it beats waiting for `waiting` by enough to be worth it.
+    pub fn beats(&self, waiting: Window) -> bool {
+        self.window.first_roll < waiting.first_roll - MIN_GAIN_FRAMES
     }
 
     /// Whether there's still time to follow it, as of game frame `now`.

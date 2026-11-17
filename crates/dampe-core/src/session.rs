@@ -7,7 +7,9 @@ use crate::detector::{Cadence, Detector, Flutter, Health, Rect};
 use crate::navi::NaviWatch;
 use crate::ocarina::Plan;
 use crate::picture::{GameArea, HEIGHT, Luma, Normalizer, WIDTH};
-use crate::reading::{Candidate, LIKELY_MIN_CONFIDENCE, Readings, Status, Window, certain_part, rolls_for_all};
+use crate::reading::{
+    Candidate, LIKELY_MIN_CONFIDENCE, PROVEN_PART_MIN_FRAMES, Readings, Status, Window, certain_part, rolls_for_all,
+};
 use crate::rng::{BOX_GONE_TO_ROLL, StateWalk, rolls_heart_piece};
 use crate::solver::Observation;
 use crate::textbox::{Change, FRAMES_TO_CLOSE, TextWatch, TextboxWatch};
@@ -171,6 +173,9 @@ fn tracker_thread(work: Receiver<Work>, updates: Sender<Update>) {
     let mut likely: Option<Window> = None;
     // The plan on offer, kept until it's too late to follow
     let mut ocarina: Option<Plan> = None;
+    // The green window last cued, kept until it's gone by, since a plan has to beat that one: the next
+    // window from the countdown's lead on can be a later one
+    let mut green: Option<Window> = None;
     while let Ok(job) = work.recv() {
         let mut now = None;
         let mut jobs = vec![job];
@@ -182,6 +187,7 @@ fn tracker_thread(work: Receiver<Work>, updates: Sender<Update>) {
                     tracker.reset();
                     likely = None;
                     ocarina = None;
+                    green = None;
                     now = None;
                 }
                 Work::Replace(through, flutters, at) => {
@@ -206,7 +212,7 @@ fn tracker_thread(work: Receiver<Work>, updates: Sender<Update>) {
             still_ahead(window, now) && tracker.window_confidence(around) >= LIKELY_MIN_CONFIDENCE
         });
         let proven = likely.filter(|_| locked).and_then(|window| {
-            certain_part(window, MIN_WINDOW_FRAMES, |part| {
+            certain_part(window, PROVEN_PART_MIN_FRAMES, |part| {
                 rolls_for_all(tracker.candidates(), part) && tracker.window_confidence(part) >= CERTAIN
             })
         });
@@ -224,11 +230,13 @@ fn tracker_thread(work: Receiver<Work>, updates: Sender<Update>) {
             likely = found.map(|found| found.window);
             likely_update = found.map(|found| (found.window, found.chance));
         }
-        ocarina = ocarina.filter(|plan| locked && plan.can_follow(now as f64));
+        green = green.filter(|cued| still_ahead(cued, now)).or(window);
+        // A running cue is what waiting gets, and a running likely one is as good as certain after a lock
+        let running = green.or(likely);
+        ocarina = ocarina
+            .filter(|plan| locked && plan.can_follow(now as f64) && running.is_none_or(|waiting| plan.beats(waiting)));
         if locked && ocarina.is_none() {
-            // A running likely cue is what waiting gets too, and after a lock it's as good as certain
-            let waiting =
-                window.or(likely).or_else(|| tracker.next_window(now + CUE_LEAD_FRAMES, MIN_WINDOW_FRAMES));
+            let waiting = running.or_else(|| tracker.next_window(now + CUE_LEAD_FRAMES, MIN_WINDOW_FRAMES));
             ocarina = crate::ocarina::find(tracker.candidates(), now, waiting);
         }
         let update = Update {

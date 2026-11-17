@@ -25,10 +25,10 @@ video = [
 
 [dependencies]
 dampe-core = { path = "../dampe-core" }
-slint = { version = "1.18.1", default-features = false, features = ["std", "backend-winit", "backend-winit-x11", "backend-winit-wayland", "renderer-software", "compat-1-2"] }
+slint = { version = "1.19.0", default-features = false, features = ["std", "backend-winit", "backend-winit-x11", "backend-winit-wayland", "renderer-software", "compat-1-2"] }
 
 [build-dependencies]
-slint-build = "1.18.1"
+slint-build = "1.19.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Slint finds fonts with fontconfig. Loaded when the program runs instead of linked, so building

@@ -161,12 +161,6 @@ fn reading_rows(readings: &Readings, left: impl Fn(&Reading) -> Option<f64>) -> 
     (rows, summary)
 }
 
-/// Repaints the whole window with the next change. See the rectangle this flips for why. Video's frames
-/// don't do this, since they come too often, and they didn't hide the problem from the text either.
-fn repaint_all(window: &MainWindow) {
-    window.set_repaint_all(!window.get_repaint_all());
-}
-
 /// Talks to the window from the read's thread.
 #[derive(Clone)]
 pub struct Gui {
@@ -178,18 +172,10 @@ pub struct Gui {
 
 impl Gui {
     fn on_ui(&self, change: impl FnOnce(&MainWindow) + Send + 'static) {
-        self.on_ui_painting(true, change);
-    }
-
-    /// Makes `change` in the window, then repaints all of it if `everything`.
-    fn on_ui_painting(&self, everything: bool, change: impl FnOnce(&MainWindow) + Send + 'static) {
         let window = self.window.clone();
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(window) = window.upgrade() {
                 change(&window);
-                if everything {
-                    repaint_all(&window);
-                }
             }
         });
     }
@@ -211,7 +197,7 @@ impl Gui {
         });
         let blinking = eye.is_some_and(|eye| blobs.iter().any(|blob| blob.overlaps(&eye)));
         let pending = self.picture_pending.clone();
-        self.on_ui_painting(false, move |window| {
+        self.on_ui(move |window| {
             pending.store(false, Ordering::Release);
             window.set_feed(slint::Image::from_rgba8(feed));
             let marks: Vec<GameRect> = blobs.into_iter().map(game_rect).collect();
@@ -468,15 +454,10 @@ pub fn run(options: Options, read: impl FnOnce(Gui, Arc<AtomicBool>) + Send + 's
         let pressing = at <= now;
         let pulse = PULSE_AT.iter().any(|&second| (0.0..PULSE_SECONDS).contains(&(second - left)));
         let text: SharedString = if pressing { "PRESS A".into() } else { format!("{left:.1} s").into() };
-        // The bar alone moves every tick, and repainting everything that often costs too much beside OBS
-        let changed = window.get_press() != pressing || window.get_pulse() != pulse || window.get_countdown() != text;
         window.set_press(pressing);
         window.set_pulse(pulse);
         window.set_countdown(text);
         window.set_countdown_share((1.0 - left / BAR_SECONDS).clamp(0.0, 1.0) as f32);
-        if changed {
-            repaint_all(&window);
-        }
     });
 
     let thread_gui = gui.clone();

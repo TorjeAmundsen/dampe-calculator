@@ -8,12 +8,12 @@
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use crate::reading::{
-    CONFIRMATIONS, Candidate, HORIZON, LIKELY_HORIZON, LIKELY_MIN_CONFIDENCE, LIKELY_READINGS, LINK_PHASES, Reading,
-    Readings, Status, Window, certain_part, chances_by_frame, first_likely_window, first_window, rolls_for_all,
-    scan_all_states,
-};
 use crate::ocarina::Plan;
+use crate::reading::{
+    CONFIRMATIONS, Candidate, HORIZON, LIKELY_HORIZON, LIKELY_MIN_CONFIDENCE, LIKELY_READINGS, LINK_PHASES,
+    PROVEN_PART_MIN_FRAMES, Reading, Readings, Status, Window, certain_part, chances_by_frame, first_likely_window,
+    first_window, rolls_for_all, scan_all_states,
+};
 use crate::rng::{BOX_GONE_TO_ROLL, Blinks};
 
 /// Game frames per second, which is all there is without video to measure it from.
@@ -415,7 +415,8 @@ impl ManualTracker {
             .collect();
         // With none left the presses say nothing about which, and whether the lock holds is check_lock's
         let Some(best) = rescored.iter().map(Followed::total_cost).min_by(f64::total_cmp) else { return };
-        self.followed = rescored.into_iter().filter(|followed| followed.total_cost() <= best + LOCKED_DROP_COST).collect();
+        self.followed =
+            rescored.into_iter().filter(|followed| followed.total_cost() <= best + LOCKED_DROP_COST).collect();
         self.followed.sort_unstable_by(|a, b| a.total_cost().total_cmp(&b.total_cost()));
     }
 
@@ -643,6 +644,9 @@ struct Search {
     use_ocarina: bool,
     /// The plan on offer, kept until it's too late to follow.
     ocarina: Option<Plan>,
+    /// The green window last cued, kept until it's gone by, since a plan has to beat that one: the next
+    /// window from the countdown's lead on can be a later one.
+    green: Option<Window>,
 }
 
 impl Search {
@@ -655,6 +659,7 @@ impl Search {
             judging: None,
             use_ocarina: false,
             ocarina: None,
+            green: None,
         }
     }
 
@@ -667,6 +672,7 @@ impl Search {
                     self.tracker = ManualTracker::new();
                     self.likely = None;
                     self.ocarina = None;
+                    self.green = None;
                     self.generation = new;
                     pressed = None;
                 }
@@ -702,7 +708,7 @@ impl Search {
         });
         let proven = self.likely.filter(|_| locked).and_then(|window| {
             let readings = self.tracker.same_state();
-            certain_part(window, MIN_WINDOW_FRAMES, |part| {
+            certain_part(window, PROVEN_PART_MIN_FRAMES, |part| {
                 rolls_for_all(&readings, part) && self.tracker.window_chance(part) >= CERTAIN
             })
         });
@@ -726,13 +732,15 @@ impl Search {
             );
             self.likely = likely_update.map(|(window, _)| window);
         }
+        self.green = self.green.filter(|cued| still_ahead(cued, now)).or(window);
+        // A running cue is what waiting gets, and a running likely one is as good as certain after a lock
+        let running = self.green.or(self.likely);
         let follow_from = now + self.extra_lead as f64;
-        self.ocarina = self.ocarina.filter(|plan| locked && plan.can_follow(follow_from));
+        self.ocarina = self
+            .ocarina
+            .filter(|plan| locked && plan.can_follow(follow_from) && running.is_none_or(|waiting| plan.beats(waiting)));
         if self.use_ocarina && locked && self.ocarina.is_none() {
-            // A running likely cue is what waiting gets too, and after a lock it's as good as certain
-            let waiting = window
-                .or(self.likely)
-                .or_else(|| self.tracker.next_window(now as i64 + CUE_LEAD_FRAMES, MIN_WINDOW_FRAMES));
+            let waiting = running.or_else(|| self.tracker.next_window(now as i64 + CUE_LEAD_FRAMES, MIN_WINDOW_FRAMES));
             self.ocarina = self.tracker.ocarina_plan(now as i64 + self.extra_lead, waiting);
         }
         Update {

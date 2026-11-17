@@ -402,8 +402,6 @@ export component MainWindow inherits Window {
     // plain {
     property <bool> manual: true;
     // } plain
-    // Flipped to repaint the whole window
-    in property <bool> repaint-all;
     in property <bool> global-keys-available;
     // Keys 3 and 4 work from any program, while nothing else gets them
     in-out property <bool> global-keys: true;
@@ -430,14 +428,6 @@ export component MainWindow inherits Window {
     forward-focus: keys;
 
     keys := FocusScope {
-        // Slint's software renderer clears each changed area but draws text across the box around all
-        // of them, so with several small changes at once, text ended up over old text. Changing this
-        // changes the whole window, which makes it one area. Both are fully transparent: any opacity at
-        // all shifts the whole background by a shade, which flickers.
-        Rectangle {
-            background: root.repaint-all ? #00000000 : #01010100;
-        }
-
         key-pressed(event) => {
             if (root.hotkey-text != "" && event.text == root.hotkey-text) {
                 root.hotkey-pressed();

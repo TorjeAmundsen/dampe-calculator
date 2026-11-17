@@ -15,10 +15,17 @@ critical health. Press **Start over** (F8) if you've pressed anything since your
 Turn on **Sound** under Settings. It plays two rising notes when the read locks, so you can keep your eyes on Dampé and still know
 when to stop.
 
+![An angle where both of his eyes stay clear](assets/docs/angle-clear.png)
+<!-- Placeholder, to record: the same screenshot as in the README. -->
+
+
 Stand where both of his eyes are clear of his jaw and of Link. Angles that hide an eye for part of his idle loop make you miss
 flutters, and every miss costs time.
 
 ## Start pressing early
+
+![Navi coming out on a repeat talk and going away](assets/docs/navi-repeat-talk.webp)
+<!-- Placeholder, to record: Animated WebP of a repeat talk: the Yes/No box opens, Navi comes out about 3 seconds later and goes back to Link. Mark the moment presses can start. Make it with python tools/clip.py <recording> assets/docs/navi-repeat-talk.webp --start <m:ss> --end <m:ss>. -->
 
 Flutters count from the moment Navi has gone away, not from the Yes/No box. On a first talk she's gone before his question, so you
 can press through his text. On a repeat talk his box opens right away and she comes about 3 to 4 seconds later, so wait for her
@@ -34,6 +41,10 @@ A flutter is 3 or 4 quick blinks, and the count is half of what the calculator l
 | None | press 12.7 |
 | 1 in 10 | press 13.1 |
 | 43 in 100, as logged | press 15.0 |
+
+![A flutter of 3 blinks next to one of 4, slowed down](assets/docs/flutter-3-vs-4.webp)
+<!-- Placeholder, to record: Animated WebP zoomed on Dampe's eye, a 3 then a 4, at half speed, each labelled with its count. Make it with python tools/clip.py <recording> assets/docs/flutter-3-vs-4.webp --crop W:H:X:Y --width 480 --speed 0.5 --start <m:ss> --end <m:ss>, cropped around his eye. -->
+
 
 A 4 takes 3 game frames longer than a 3, about 150 ms. Feel it as a longer burst rather than counting each blink. If you press the
 wrong key, press either key again within 1.3 seconds to flip it. A miscount isn't fatal, since it's scored as unlikely rather than
@@ -86,6 +97,10 @@ countdowns:
 2. **Cancel Ocarina and talk to Dampé.** Stay still with it out, since walking out of his view makes him walk, and that draws RNG.
    At zero, put it away and talk to him facing away. Mash the text: the Yes/No box has to be up within 30 game frames.
 3. **Press A on Yes** at zero, like any cue.
+
+![Saying No while holding away from Dampe, so Navi stays away](assets/docs/ocarina-hold-away.webp)
+<!-- Placeholder, to record: Animated WebP of pressing No while holding the stick away, Link staying turned away and Navi staying in, then the same with the stick let go and Navi coming out. Make it with python tools/clip.py <recording> assets/docs/ocarina-hold-away.webp --start <m:ss> --end <m:ss>. -->
+
 
 If Navi comes out at any point, the plan is lost. Wait for her to go away, start over, and read again.
 

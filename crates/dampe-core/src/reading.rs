@@ -114,6 +114,12 @@ pub(crate) fn first_window(candidates: &[Candidate], from: i64, min_frames: i64,
     None
 }
 
+/// The least of a running likely cue that has to be proven for it to turn green: about +-225 ms. A lock can
+/// prove a likely window's target while one reading of when Link next blinks narrows its edges, and a
+/// new green cue would come much later. On a real read that left 11 proven frames around a target that
+/// all readings agreed on, and the next green cue came 12 s later.
+pub(crate) const PROVEN_PART_MIN_FRAMES: i64 = 9;
+
 /// The widest part of a likely `window` with the same target that is `certain`, at least `min_frames`
 /// long, so a proven state can turn its countdown green without moving it. A lock can still leave
 /// readings that differ in when Link next blinks, which only changes a window's edges.
@@ -220,6 +226,9 @@ mod tests {
         assert_eq!(part, Window { first_roll: 1043, last_roll: 1061 });
         assert_eq!(part.target(), window.target());
         assert_eq!(certain_part(window, 13, |part| part.last_roll <= 1047), None, "the target itself isn't proven");
+        // The case that turned a likely cue green with less than a new cue's margin
+        let part = certain_part(window, PROVEN_PART_MIN_FRAMES, |part| part.last_roll <= 1056).expect("no part");
+        assert_eq!(part, Window { first_roll: 1048, last_roll: 1056 });
     }
 
     /// A reading that fits worse still has to get the Heart Piece for the window to count.

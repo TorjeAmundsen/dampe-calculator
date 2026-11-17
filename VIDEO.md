@@ -1,0 +1,131 @@
+# The video build
+
+Built with `--features video`, this watches Dampé's eyes in your video feed instead of you pressing keys. Video goes in and a
+countdown comes out. It's a proof of concept: the [manual calculator](README.md) is the one to use, and releases don't include
+this build.
+
+## What you need
+
+- Windows 10 or 11, 64-bit, or 64-bit Linux. Linux hasn't been tried with a real feed yet, so expect more rough edges there.
+- OoT on **N64 or Wii VC, NTSC**. GameCube doesn't work, since its RNG differs. PAL hasn't been tested and isn't supported.
+- A capture card, and OBS Studio with Virtual Camera. Other video devices can work with `--device`.
+
+## Setup
+
+1. Releases don't include this build, so build it yourself, which needs Rust: `cargo build --release --features video` puts
+   `dampe.exe` or `dampe` in `target/release`.
+2. In OBS, open Configure Virtual Camera next to Start Virtual Camera, and set it to the source with your game on it, so
+   your stream layout isn't included.
+3. Click **Start Virtual Camera**. Do this before starting the program.
+4. Run it. In its window, choose N64 or Wii VC.
+
+Use a stable 60 FPS in OBS if you can. It has been used a lot while OBS was recording, and it needs some CPU: about half
+of one core on average, more in short bursts while it searches.
+
+On Linux, Virtual Camera needs the `v4l2loopback` module, and sound needs `paplay`, `pw-play` or `aplay`. Your user needs
+access to `/dev/video*`, usually through the `video` group. Devices that only offer MJPEG don't work, so use Virtual Camera
+for those. Start it from a terminal the first time, since errors only show there.
+
+## Using it
+
+Before talking to Dampe, make sure of these, since they draw RNG the program can't see:
+
+- The Gold Skulltula on the graveyard wall is dead, and no soil Skulltulas or released bugs are around.
+- It isn't raining.
+- You have more than 1 heart. Critical health makes the camera draw RNG.
+
+Then:
+
+1. Talk to him with his eyes visible. It starts reading at his first text box, and counts his blinks once Navi has gone away.
+2. Go through the text to the Yes/No box whenever you like, and stay on that box until the countdown.
+3. When the countdown starts, press A on Yes as it reaches zero. Anticipate it like a rhythm game rather than reacting.
+
+![The video window reading Dampe's eyes](assets/docs/video-read.webp)
+<!-- Placeholder, to record: Animated WebP of the video window during a read: the eye box finding his eye, blinks marked in the zoom, the log counting flutters, and the countdown. Make it from a recording of the video window alone, with python tools/clip.py <recording> assets/docs/video-read.webp --layout whole --start <m:ss> --end <m:ss>. -->
+
+It takes about 25 seconds to be certain when his eyes are clear, plus the wait for a good moment, which can be anything
+from a few seconds to half a minute.
+
+### Green and amber
+
+- **Green** means a state of the RNG is proven. On test recordings every green moment was right, though your own press
+  timing still counts.
+- **Amber** comes earlier, with a percentage, before anything is proven. It may give a rupee, and you can wait for green
+  if you prefer. Aim for zero as exactly as you can, since the percentage is for that moment.
+
+A cue can cancel if the video stops matching. If a new countdown starts right away, follow the new one.
+
+Once locked, it can plan an earlier Heart Piece with the Ocarina, the same way as the [manual calculator](README.md#the-ocarina),
+with the same **Ocarina** switch next to Sound.
+
+### The list of candidates
+
+Above the feed are the likeliest states of the RNG it's considering, as many as fit the window. The line above them says how
+many there are, and the chance the real one is none of them. Many can share a seed, differing only in Link's first blink,
+until he blinks. The bar behind each is its
+chance of being the real one, and its color says how far it's got: gray while searching, blue once it has predicted a blink,
+and green with both dots lit, which is what proving a state takes. Each shows its seed and the frame of Link's first blink,
+then how it matches what was seen: blinks it expected and saw (hit), expected and didn't see (miss), and saw but didn't expect
+(stray). The time on the right is when that state alone would give the Heart Piece, so it isn't a cue to follow.
+
+![The video window with its list of candidates](assets/docs/video-window.png)
+<!-- Placeholder, to record: screenshot of the whole video window once locked. -->
+
+### Angles
+
+His eyes have to be visible. If they're fully hidden for part of his animation, by his jaw or Link, it still gets there
+but can take over a minute. Talking to him again from a clearer angle is usually faster. If the camera ends up behind
+Link and his eyes can't be seen at all, it can't read him, so you'll need a new angle.
+
+![An angle where both of his eyes stay clear](assets/docs/angle-clear.png)
+<!-- Placeholder, to record: screenshot of the game from a good angle, eyes clear of his jaw and Link. -->
+
+![An angle where his jaw hides an eye](assets/docs/angle-hidden.png)
+<!-- Placeholder, to record: screenshot of the game from a bad angle, his jaw or Link covering an eye for part of his idle animation. -->
+
+Starting a new talk resets it by itself. Use **Start over** if it seems stuck.
+
+### Navi and Force start
+
+Navi's sparkles draw RNG, so nothing before she's gone can count. It sees her bright light and starts over until it's gone. On a first talk she's gone before the Yes/No box. On a
+repeat talk the box opens right away and she comes about 3-4 seconds later, and it waits for her by itself.
+
+You normally never need **Force start** (**F8**), because reading starts by itself at his first text box. Don't press it
+to get things going, like in a loading zone or while walking up to him: it reads whatever is on screen. A text box opening
+replaces a read forced before it, so that only costs time until then.
+
+Use it with a text box up if it isn't seeing Navi go away, or with no box if it won't start at all. Only blinks from that
+moment on count, so if Navi is around, wait until she's gone. F8 works from any program, and only listens to your keyboard.
+On Linux it only works while the window has focus. `--navi-key F9` picks another function key.
+
+### Timing
+
+The countdown allows for your platform's input latency (2 game frames on N64, 3 on Wii VC) and the delay of your feed,
+which it measures from your presses and remembers. The first few presses may be slightly off, and that's normal.
+`--feed-delay-ms` sets the delay by hand instead.
+
+## Options
+
+    dampe live [--device <name>] [--platform n64|vc] [--feed-delay-ms <ms>] [--navi-key <F1-F24>]
+               [--no-window] [--no-sound]
+    dampe devices    list video devices
+    dampe diag       measure what the feed delivers, for reporting problems
+
+Running it with no options is `dampe live`, which reads video in this build, and `dampe live --manual` is the manual calculator from the [README](README.md). Sound is off by default and set in the window, and it's always on
+with `--no-window`, which has no other cue. Settings are in `%APPDATA%\dampe-calculator`, or `~/.config/dampe-calculator` on Linux.
+
+## Reporting problems
+
+The log has what's needed, so please include it. The **Log** button shows the file, which is
+`dampe.log` in the settings folder, and the run before it is `dampe.previous.log`. Also say your platform, capture setup, and what each dig gave. For
+amber presses, the percentage shown and the result are especially useful. Known limits:
+
+- Tested on Wii VC, mostly with Japanese text. N64 and analog capture are untested.
+- On Linux the sound cue goes through an external player, whose delay isn't measured, so trust the window over the sound.
+- If it keeps saying to talk to Dampe with a text box clearly up, it isn't recognizing the box. Force start gets it going.
+
+## How it reads
+
+Dampé's idle animation repeats every 49 game frames, drawn the same way each time, so a frame minus earlier frames from the same
+point of the loop leaves only what really changed, and his eye is what goes half closed, closed, open, one game frame each, 3 or 4
+times. No face tracking is needed.

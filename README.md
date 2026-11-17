@@ -3,25 +3,24 @@
 Gets the Heart Piece from Dampe's digging game in Ocarina of Time on demand, instead of the usual 1 in 10.
 
 You press a key for each burst of Dampe's blinks, it works out the game's RNG from when they came, and it counts down to the
-moment to press A. **It never sends any input to the game, and this version doesn't read video at all.** There's a separate
-build that reads the blinks from a video feed, described [below](#the-video-build).
+moment to press A. A separate proof-of-concept build reads the blinks from a video feed instead, described in [VIDEO.md](VIDEO.md).
 
 It's been tested on one Wii VC setup, so expect rough edges, and please report what you find.
 
-## What you need
-
-- Windows 10 or 11, 64-bit, or 64-bit Linux. On Linux the keys only work with the window focused, and it hasn't been tried.
-- OoT on **N64 or Wii VC, NTSC**. GameCube doesn't work, since its RNG differs. PAL hasn't been tested and isn't supported.
-  Only Wii VC has been tried.
+![The manual window beside the game through a whole read, from the first press to the Heart Piece](assets/docs/manual-read.mp4)
+<!-- Placeholder, to record: MP4 of the game and the manual window side by side. Talk to Dampe, press 3s and 4s, the lock, the countdown, A on Yes, and the Heart Piece. Make it with python tools/clip.py <recording> assets/docs/manual-read.mp4 --start <m:ss> --end <m:ss>. Then upload it by dragging the file into this file in GitHub's web editor, which puts a github.com/user-attachments link here: replace the image line above with that link and delete this comment. -->
 
 ## Setup
 
-The quickest way is [in your browser](https://torjeamundsen.github.io/dampe-calculator/), with nothing to download. There, keys 3
-and 4 only work with its tab focused, so use the program below if you need them while another program has focus.
+It works with OoT on **N64 or Wii VC, NTSC**, and has only been tried on Wii VC. GameCube's RNG differs, and PAL isn't supported.
 
-Otherwise, download the zip for your system from the [releases page](https://github.com/TorjeAmundsen/dampe-calculator/releases), take
-`dampe.exe` or `dampe` from it, and run it. Nothing needs installing. Windows may warn about an unknown publisher, since the
-program isn't signed: choose More info, then Run anyway. It starts on Wii VC: on N64, choose that under **Settings** in its window.
+The quickest way is [in your browser](https://torjeamundsen.github.io/dampe-calculator/), with nothing to download. Its keys 3
+and 4 only work with the tab focused. For keys that work from any program, download the zip for Windows or Linux, 64-bit, from
+the [releases page](https://github.com/TorjeAmundsen/dampe-calculator/releases) and run the program in it. Nothing needs
+installing. Windows may warn about an unknown publisher, since the program isn't signed: choose More info, then Run anyway. On
+Linux the keys only work with the window focused, and it hasn't been tried.
+
+Both start on Wii VC, so on N64, choose that under **Settings**.
 
 ## Using it
 
@@ -42,6 +41,10 @@ Then:
 4. When a countdown starts, press A on Yes as it reaches zero. Anticipate it like a rhythm game rather than reacting. The dig ends
    what's been read, so Start over before talking to him again.
 
+![The manual window partway through a read, with candidates listed](assets/docs/manual-reading.png)
+<!-- Placeholder, to record: screenshot of the manual window mid-read, with a few candidates and the recent presses showing. -->
+
+
 It takes about 14 flutters to be certain, which is 40 seconds or so, plus the wait for a good moment. [GUIDE.md](GUIDE.md) is
 about getting that lower. You can stop pressing once
 it's locked, and with sound on, two rising notes say when that is. Pressing on can still help: the states left can differ in
@@ -50,18 +53,32 @@ when Link next blinks, and later flutters rule some out, which can bring an earl
 By default keys 3 and 4 work from any program, and other programs can't get them while it's on. Turn that off in Settings
 if you need to type them, and then they only work with the window focused. It stays how you left it.
 
+### Angles
+
+Stand where both of his eyes stay clear of his jaw and of Link through his whole idle animation. If one is hidden for part of it,
+you'll miss flutters, and each miss costs time. Talking to him again from a clearer angle is often faster.
+
+![An angle where both of his eyes stay clear](assets/docs/angle-clear.png)
+<!-- Placeholder, to record: screenshot of the game from a good angle, eyes clear of his jaw and Link. -->
+
+![An angle where his jaw hides an eye](assets/docs/angle-hidden.png)
+<!-- Placeholder, to record: screenshot of the game from a bad angle, his jaw or Link covering an eye for part of his idle animation. -->
+
 ### The Ocarina
 
 Once it's locked it also looks for an earlier Heart Piece by freezing Dampe. While the Ocarina is out his blink timer stops and
 Link's keeps going, so Link's single draw can come before Dampe's next pair. When one saves at least 2 seconds, it replaces the
 usual countdown with three, and the line under the countdown says "Ocarina". It's on by default, and **Ocarina** in Settings turns
-it off. It stays how you left it, and the build that reads video does the same, with the same switch next to Sound.
+it off. It stays how you left it.
 
 1. **Say No and pull Ocarina:** hold the stick away from Dampe and press No at zero, so Link doesn't face him and bring Navi out.
    Mash the text closed and have the Ocarina out within 15 game frames (0.75 s).
 2. **Cancel Ocarina and talk to Dampé:** stay still until zero, then put it away and talk to him facing away. Mash the text: there
    are at least 30 game frames (1.5 s) to the Yes/No box.
 3. **Press A on Yes** at zero.
+
+![An Ocarina plan followed from the first countdown to the Heart Piece](assets/docs/ocarina-plan.mp4)
+<!-- Placeholder, to record: MP4 of the game and window through all three Ocarina countdowns: No while holding away, Ocarina out, put away, talking facing away, Yes, and the Heart Piece. Make it with python tools/clip.py <recording> assets/docs/ocarina-plan.mp4 --start <m:ss> --end <m:ss>. Then upload it by dragging the file into this file in GitHub's web editor, which puts a github.com/user-attachments link here: replace the image line above with that link and delete this comment. -->
 
 Don't run far while holding away: leaving his view or getting too far makes him walk, which draws RNG. The freeze has been checked
 against the RNG watch, but no plan has been followed to a Heart Piece yet.
@@ -73,6 +90,12 @@ against the RNG watch, but no plan has been followed to a Heart Piece yet.
 - **Amber** comes earlier, with a percentage, before anything is proven. It may give a rupee, and you can wait for green if you
   prefer. Aim for zero as exactly as you can.
 
+![An amber countdown with its percentage](assets/docs/amber-cue.png)
+<!-- Placeholder, to record: screenshot of the manual window during an amber countdown. -->
+
+![A green countdown](assets/docs/green-cue.png)
+<!-- Placeholder, to record: screenshot of the manual window during a green countdown. -->
+
 A green cue only cancels if 3 presses in a row don't match. An amber one cancels if a press takes its chance under 70%. Stopping
 never cancels either.
 
@@ -83,11 +106,15 @@ one. Each shows how many of your presses it explains (hit), flutters you didn't 
 A row is gray until a state is locked, then green. The time on the right counts to the moment to press if that state is the real one, so you can go for one that hasn't become the main countdown
 yet, at your own risk. "passed" means that moment has gone by, and "over 60 s" that none is coming within a minute.
 
+![The list of candidates once a state is locked](assets/docs/candidates-locked.png)
+<!-- Placeholder, to record: screenshot of the manual window just after a lock, with the green rows and their times. -->
+
 ### Timing
 
-The countdown allows for your platform's input latency (2 game frames on N64, 3 on Wii VC) and 330 ms for how late your presses
-are after a flutter ends. Nothing here can see when the box really left, so it can't correct that by itself. If green presses
-keep failing, `--lag-ms` changes the 330.
+The countdown allows for your platform's input latency (2 game frames on N64, 3 on Wii VC), and assumes you press each flutter
+about 330 ms after it ends, which is what logged reads averaged. It never sees the game, so it can't learn your own lateness. If
+green presses keep giving rupees, your presses may run earlier or later than that: set your own under **Lag** in the browser's
+Settings, or with `--lag-ms` for the program.
 
 ## Options
 
@@ -101,125 +128,13 @@ Running it with no options is `dampe live`. `--start-over-key` picks another key
 The **Log** button under **Settings** shows `dampe.log` in the settings folder, and the run before it is `dampe.previous.log`. Please include it, and
 say your platform and what each dig gave, especially the percentage shown for amber presses.
 
-## The video build
-
-Built with `--features video`, this watches Dampe's eyes in your video feed instead of you pressing keys. Video goes in and a
-countdown comes out. The rest of this section is about that build.
-
-### What you need
-
-- Windows 10 or 11, 64-bit, or 64-bit Linux. Linux hasn't been tried with a real feed yet, so expect more rough edges there.
-- OoT on **N64 or Wii VC, NTSC**. GameCube doesn't work, since its RNG differs. PAL hasn't been tested and isn't supported.
-- A capture card, and OBS Studio with Virtual Camera. Other video devices can work with `--device`.
-
-### Setup
-
-1. Releases don't include this build, so build it yourself, which needs Rust: `cargo build --release --features video` puts
-   `dampe.exe` or `dampe` in `target/release`.
-2. In OBS, open Configure Virtual Camera next to Start Virtual Camera, and set it to the source with your game on it, so
-   your stream layout isn't included.
-3. Click **Start Virtual Camera**. Do this before starting the program.
-4. Run it. In its window, choose N64 or Wii VC.
-
-Use a stable 60 FPS in OBS if you can. It has been used a lot while OBS was recording, and it needs some CPU: about half
-of one core on average, more in short bursts while it searches.
-
-On Linux, Virtual Camera needs the `v4l2loopback` module, and sound needs `paplay`, `pw-play` or `aplay`. Your user needs
-access to `/dev/video*`, usually through the `video` group. Devices that only offer MJPEG don't work, so use Virtual Camera
-for those. Start it from a terminal the first time, since errors only show there.
-
-### Using it
-
-Before talking to Dampe, make sure of these, since they draw RNG the program can't see:
-
-- The Gold Skulltula on the graveyard wall is dead, and no soil Skulltulas or released bugs are around.
-- It isn't raining.
-- You have more than 1 heart. Critical health makes the camera draw RNG.
-
-Then:
-
-1. Talk to him with his eyes visible. It starts reading at his first text box, and counts his blinks once Navi has gone away.
-2. Go through the text to the Yes/No box whenever you like, and stay on that box until the countdown.
-3. When the countdown starts, press A on Yes as it reaches zero. Anticipate it like a rhythm game rather than reacting.
-
-It takes about 25 seconds to be certain when his eyes are clear, plus the wait for a good moment, which can be anything
-from a few seconds to half a minute.
-
-#### Green and amber
-
-- **Green** means a state of the RNG is proven. On test recordings every green moment was right, though your own press
-  timing still counts.
-- **Amber** comes earlier, with a percentage, before anything is proven. It may give a rupee, and you can wait for green
-  if you prefer. Aim for zero as exactly as you can, since the percentage is for that moment.
-
-A cue can cancel if the video stops matching. If a new countdown starts right away, follow the new one.
-
-#### The list of candidates
-
-Above the feed are the likeliest states of the RNG it's considering, as many as fit the window. The line above them says how
-many there are, and the chance the real one is none of them. Many can share a seed, differing only in Link's first blink,
-until he blinks. The bar behind each is its
-chance of being the real one, and its color says how far it's got: gray while searching, blue once it has predicted a blink,
-and green with both dots lit, which is what proving a state takes. Each shows its seed and the frame of Link's first blink,
-then how it matches what was seen: blinks it expected and saw (hit), expected and didn't see (miss), and saw but didn't expect
-(stray). The time on the right is when that state alone would give the Heart Piece, so it isn't a cue to follow.
-
-#### Angles
-
-His eyes have to be visible. If they're fully hidden for part of his animation, by his jaw or Link, it still gets there
-but can take over a minute. Talking to him again from a clearer angle is usually faster. If the camera ends up behind
-Link and his eyes can't be seen at all, it can't read him, so you'll need a new angle.
-
-Starting a new talk resets it by itself. Use **Start over** if it seems stuck.
-
-#### Navi and Force start
-
-Navi's sparkles draw RNG, so nothing before she's gone can count. It sees her bright light and starts over until it's gone. On a first talk she's gone before the Yes/No box. On a
-repeat talk the box opens right away and she comes about 3-4 seconds later, and it waits for her by itself.
-
-You normally never need **Force start** (**F8**), because reading starts by itself at his first text box. Don't press it
-to get things going, like in a loading zone or while walking up to him: it reads whatever is on screen. A text box opening
-replaces a read forced before it, so that only costs time until then.
-
-Use it with a text box up if it isn't seeing Navi go away, or with no box if it won't start at all. Only blinks from that
-moment on count, so if Navi is around, wait until she's gone. F8 works from any program, and only listens to your keyboard.
-On Linux it only works while the window has focus. `--navi-key F9` picks another function key.
-
-#### Timing
-
-The countdown allows for your platform's input latency (2 game frames on N64, 3 on Wii VC) and the delay of your feed,
-which it measures from your presses and remembers. The first few presses may be slightly off, and that's normal.
-`--feed-delay-ms` sets the delay by hand instead.
-
-### Options
-
-    dampe live [--device <name>] [--platform n64|vc] [--feed-delay-ms <ms>] [--navi-key <F1-F24>]
-               [--no-window] [--no-sound]
-    dampe devices    list video devices
-    dampe diag       measure what the feed delivers, for reporting problems
-
-Running it with no options is `dampe live`, which reads video in this build, and `dampe live --manual` is the manual mode above. Sound is off by default and set in the window, and it's always on
-with `--no-window`, which has no other cue. Settings are in `%APPDATA%\dampe-calculator`, or `~/.config/dampe-calculator` on Linux.
-
-### Reporting problems
-
-The log has what's needed, so please include it. The **Log** button shows the file, which is
-`dampe.log` in the settings folder, and the run before it is `dampe.previous.log`. Also say your platform, capture setup, and what each dig gave. For
-amber presses, the percentage shown and the result are especially useful. Known limits:
-
-- Tested on Wii VC, mostly with Japanese text. N64 and analog capture are untested.
-- On Linux the sound cue goes through an external player, whose delay isn't measured, so trust the window over the sound.
-- If it keeps saying to talk to Dampe with a text box clearly up, it isn't recognizing the box. Force start gets it going.
-
 ## How it works
 
 The start and count of each burst of blinks come from 2 RNG draws, and N64 and VC only use 23 bits of the RNG. So a number of them
 pin down the state, even with a person's timing being a few frames off. Every state is compared to your presses, around how late
 presses run in general, which needs no calibrating. The game's code then runs forward to find when a dig rolls the Heart Piece.
 
-The video build reads the same bursts from the picture. Dampe's idle animation repeats every 49 game frames, drawn the same way
-each time, so a frame minus earlier frames from the same point of the loop leaves only what really changed, and his eye is what
-goes half closed, closed, open, one game frame each, 3 or 4 times. No face tracking is needed.
+The [video build](VIDEO.md) reads the same bursts from the picture instead.
 
 ## Building and testing
 

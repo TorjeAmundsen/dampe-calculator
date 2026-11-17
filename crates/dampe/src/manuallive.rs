@@ -26,6 +26,9 @@ const READINGS_REFRESH: Duration = Duration::from_millis(100);
 /// What `--lag-ms` takes: earlier than the flutter's end is possible, by someone anticipating it.
 const LAG_RANGE_MS: std::ops::RangeInclusive<f64> = -500.0..=2000.0;
 
+/// How much sooner a plan's press on Yes has to be than a running countdown's to replace it.
+pub(crate) const PLAN_MUST_BEAT_SECONDS: f64 = 2.0;
+
 const WAITING: &str = "Talk to Dampé, then press once Navi has gone away";
 /// Counts shown of the last presses, enough to catch a wrong one.
 const RECENT_PRESSES: usize = 6;
@@ -262,6 +265,11 @@ fn read(
         // Dampe's flutters move once this is followed, so what's been read stops being any use
         if use_ocarina.load(Ordering::Relaxed)
             && let Some(plan) = offered.take()
+            && cue_at.is_none_or(|cue| {
+                // Never give up a running countdown for a plan that doesn't press A clearly sooner
+                let yes = moment_to_press(ManualSession::window_seconds(&plan.window)).1;
+                cue <= Instant::now() || yes + Duration::from_secs_f64(PLAN_MUST_BEAT_SECONDS) < cue
+            })
         {
             log.line(format_args!("Following the Ocarina plan: {plan:?}"));
             session.restart();
