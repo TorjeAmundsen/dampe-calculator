@@ -40,7 +40,7 @@ Then:
 2. Go through the text to the Yes/No box whenever you like, and stay on that box until the countdown.
 3. When the countdown starts, press A on Yes as it reaches zero. Anticipate it like a rhythm game rather than reacting.
 
-![The video window reading Dampe's eyes](assets/docs/video-read.webp)
+<!-- ![The video window reading Dampe's eyes](assets/docs/video-read.webp) -->
 <!-- Placeholder, to record: Animated WebP of the video window during a read: the eye box finding his eye, blinks marked in the zoom, the log counting flutters, and the countdown. Make it from a recording of the video window alone, with python tools/clip.py <recording> assets/docs/video-read.webp --layout whole --start <m:ss> --end <m:ss>. -->
 
 It takes about 25 seconds to be certain when his eyes are clear, plus the wait for a good moment, which can be anything
@@ -68,7 +68,7 @@ and green with both dots lit, which is what proving a state takes. Each shows it
 then how it matches what was seen: blinks it expected and saw (hit), expected and didn't see (miss), and saw but didn't expect
 (stray). The time on the right is when that state alone would give the Heart Piece, so it isn't a cue to follow.
 
-![The video window with its list of candidates](assets/docs/video-window.png)
+<!-- ![The video window with its list of candidates](assets/docs/video-window.png) -->
 <!-- Placeholder, to record: screenshot of the whole video window once locked. -->
 
 ### Angles
@@ -77,10 +77,10 @@ His eyes have to be visible. If they're fully hidden for part of his animation, 
 but can take over a minute. Talking to him again from a clearer angle is usually faster. If the camera ends up behind
 Link and his eyes can't be seen at all, it can't read him, so you'll need a new angle.
 
-![An angle where both of his eyes stay clear](assets/docs/angle-clear.png)
+<!-- ![An angle where both of his eyes stay clear](assets/docs/angle-clear.png) -->
 <!-- Placeholder, to record: screenshot of the game from a good angle, eyes clear of his jaw and Link. -->
 
-![An angle where his jaw hides an eye](assets/docs/angle-hidden.png)
+<!-- ![An angle where his jaw hides an eye](assets/docs/angle-hidden.png) -->
 <!-- Placeholder, to record: screenshot of the game from a bad angle, his jaw or Link covering an eye for part of his idle animation. -->
 
 Starting a new talk resets it by itself. Use **Start over** if it seems stuck.

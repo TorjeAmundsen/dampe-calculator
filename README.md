@@ -7,7 +7,7 @@ moment to press A. A separate proof-of-concept build reads the blinks from a vid
 
 It's been tested on one Wii VC setup, so expect rough edges, and please report what you find.
 
-![The manual window beside the game through a whole read, from the first press to the Heart Piece](assets/docs/manual-read.mp4)
+<!-- ![The manual window beside the game through a whole read, from the first press to the Heart Piece](assets/docs/manual-read.mp4) -->
 <!-- Placeholder, to record: MP4 of the game and the manual window side by side. Talk to Dampe, press 3s and 4s, the lock, the countdown, A on Yes, and the Heart Piece. Make it with python tools/clip.py <recording> assets/docs/manual-read.mp4 --start <m:ss> --end <m:ss>. Then upload it by dragging the file into this file in GitHub's web editor, which puts a github.com/user-attachments link here: replace the image line above with that link and delete this comment. -->
 
 ## Setup
@@ -41,7 +41,7 @@ Then:
 4. When a countdown starts, press A on Yes as it reaches zero. Anticipate it like a rhythm game rather than reacting. The dig ends
    what's been read, so Start over before talking to him again.
 
-![The manual window partway through a read, with candidates listed](assets/docs/manual-reading.png)
+<!-- ![The manual window partway through a read, with candidates listed](assets/docs/manual-reading.png) -->
 <!-- Placeholder, to record: screenshot of the manual window mid-read, with a few candidates and the recent presses showing. -->
 
 
@@ -58,10 +58,10 @@ if you need to type them, and then they only work with the window focused. It st
 Stand where both of his eyes stay clear of his jaw and of Link through his whole idle animation. If one is hidden for part of it,
 you'll miss flutters, and each miss costs time. Talking to him again from a clearer angle is often faster.
 
-![An angle where both of his eyes stay clear](assets/docs/angle-clear.png)
+<!-- ![An angle where both of his eyes stay clear](assets/docs/angle-clear.png) -->
 <!-- Placeholder, to record: screenshot of the game from a good angle, eyes clear of his jaw and Link. -->
 
-![An angle where his jaw hides an eye](assets/docs/angle-hidden.png)
+<!-- ![An angle where his jaw hides an eye](assets/docs/angle-hidden.png) -->
 <!-- Placeholder, to record: screenshot of the game from a bad angle, his jaw or Link covering an eye for part of his idle animation. -->
 
 ### The Ocarina
@@ -77,7 +77,7 @@ it off. It stays how you left it.
    are at least 30 game frames (1.5 s) to the Yes/No box.
 3. **Press A on Yes** at zero.
 
-![An Ocarina plan followed from the first countdown to the Heart Piece](assets/docs/ocarina-plan.mp4)
+<!-- ![An Ocarina plan followed from the first countdown to the Heart Piece](assets/docs/ocarina-plan.mp4) -->
 <!-- Placeholder, to record: MP4 of the game and window through all three Ocarina countdowns: No while holding away, Ocarina out, put away, talking facing away, Yes, and the Heart Piece. Make it with python tools/clip.py <recording> assets/docs/ocarina-plan.mp4 --start <m:ss> --end <m:ss>. Then upload it by dragging the file into this file in GitHub's web editor, which puts a github.com/user-attachments link here: replace the image line above with that link and delete this comment. -->
 
 Don't run far while holding away: leaving his view or getting too far makes him walk, which draws RNG. The freeze has been checked
@@ -90,10 +90,10 @@ against the RNG watch, but no plan has been followed to a Heart Piece yet.
 - **Amber** comes earlier, with a percentage, before anything is proven. It may give a rupee, and you can wait for green if you
   prefer. Aim for zero as exactly as you can.
 
-![An amber countdown with its percentage](assets/docs/amber-cue.png)
+<!-- ![An amber countdown with its percentage](assets/docs/amber-cue.png) -->
 <!-- Placeholder, to record: screenshot of the manual window during an amber countdown. -->
 
-![A green countdown](assets/docs/green-cue.png)
+<!-- ![A green countdown](assets/docs/green-cue.png) -->
 <!-- Placeholder, to record: screenshot of the manual window during a green countdown. -->
 
 A green cue only cancels if 3 presses in a row don't match. An amber one cancels if a press takes its chance under 70%. Stopping
@@ -106,7 +106,7 @@ one. Each shows how many of your presses it explains (hit), flutters you didn't 
 A row is gray until a state is locked, then green. The time on the right counts to the moment to press if that state is the real one, so you can go for one that hasn't become the main countdown
 yet, at your own risk. "passed" means that moment has gone by, and "over 60 s" that none is coming within a minute.
 
-![The list of candidates once a state is locked](assets/docs/candidates-locked.png)
+<!-- ![The list of candidates once a state is locked](assets/docs/candidates-locked.png) -->
 <!-- Placeholder, to record: screenshot of the manual window just after a lock, with the green rows and their times. -->
 
 ### Timing
